@@ -1,0 +1,19 @@
+with-expecter: true
+boilerplate-file: copyright.txt
+outpkg: "{{.PackageName}}"
+mockname: "{{.InterfaceName}}"
+filename: "{{.InterfaceName | snakecase}}.go"
+resolve-type-alias: false
+disable-version-string: true
+issue-845-fix: true
+packages:
+  d7y.io/snapshotter/internal/storage:
+    interfaces:
+      Storage:
+        config:
+          dir: mocks/storage
+  d7y.io/snapshotter/internal/metadata:
+    interfaces:
+      Metadata:
+        config:
+          dir: mocks/metadata
