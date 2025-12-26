@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package oci
 
 import (
@@ -34,17 +33,22 @@ import (
 	"oras.land/oras-go/v2/registry/remote/retry"
 )
 
-// Registry defines the registry configuration for the snapshotter.
-type Registry struct {
-	Endpoint  string
-	Namespace string
-	Username  string
-	Password  string
-	Insecure  bool
+// Client is the interface for OCI registry operations.
+type Client interface {
+	// PullBlob pulls a blob from the registry.
+	PullBlob(ctx context.Context, name, reference string) (io.ReadCloser, error)
+
+	// PullManifest pulls a manifest from the registry.
+	PullManifest(ctx context.Context, name, reference string) (ocispec.Manifest, error)
+
+	// PushBlob pushes a blob to the registry.
+	PushBlob(ctx context.Context, name string, blob io.ReadCloser) (godigest.Digest, error)
+
+	// PushManifest pushes a manifest to the registry.
+	PushManifest(ctx context.Context, name, reference string, manifest ocispec.Manifest) (godigest.Digest, error)
 }
 
-// newClient creates a new OCI client.
-func newClient(rootDir string, registry Registry) (*client, error) {
+func New(rootDir string, registry Registry) (Client, error) {
 	u, err := url.Parse(registry.Endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("invalid registry endpoint %q: %w", registry.Endpoint, err)
@@ -75,6 +79,15 @@ func newClient(rootDir string, registry Registry) (*client, error) {
 		plainHTTP: u.Scheme == "http",
 		client:    authClient,
 	}, nil
+}
+
+// Registry defines the registry configuration for the snapshotter.
+type Registry struct {
+	Endpoint  string
+	Namespace string
+	Username  string
+	Password  string
+	Insecure  bool
 }
 
 type client struct {
