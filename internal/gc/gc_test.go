@@ -513,7 +513,7 @@ func BenchmarkCollectBatch(b *testing.B) {
 	ctx := context.Background()
 
 	b.ResetTimer()
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		_, _ = gc.collectBatch(ctx)
 	}
 }
@@ -540,7 +540,7 @@ func BenchmarkPruneBatch(b *testing.B) {
 	targets := []string{"snap1", "snap2", "snap3", "snap4", "snap5"}
 
 	b.ResetTimer()
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		_ = gc.pruneBatch(ctx, targets)
 	}
 }
