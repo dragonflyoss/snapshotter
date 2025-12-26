@@ -1,6 +1,6 @@
 module d7y.io/snapshotter
 
-go 1.23.8
+go 1.24.0
 
 require (
 	d7y.io/api/v2 v2.2.8
@@ -12,7 +12,7 @@ require (
 	github.com/zeebo/xxh3 v1.0.2
 	go.etcd.io/bbolt v1.4.0
 	golang.org/x/sync v0.16.0
-	golang.org/x/sys v0.35.0
+	golang.org/x/sys v0.39.0
 	google.golang.org/grpc v1.75.0
 	oras.land/oras-go/v2 v2.6.0
 )
