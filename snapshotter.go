@@ -51,13 +51,16 @@ const (
 	defaultRestoreConcurrency = 5
 )
 
+// Option is a function that configures the snapshotter.
+type Option func(*Config)
+
 // Snapshotter is an interface that defines the methods for snapshotting and restoring files.
 type Snapshotter interface {
 	// Snapshot creates a snapshot of the specified files.
-	Snapshot(ctx context.Context, req *SnapshotRequest) error
+	Snapshot(ctx context.Context, req *SnapshotRequest, opts ...Option) error
 
 	// Restore restores the specified files from the snapshot.
-	Restore(ctx context.Context, req *RestoreRequest) error
+	Restore(ctx context.Context, req *RestoreRequest, opts ...Option) error
 }
 
 // SnapshotRequest defines the request parameters for creating a snapshot.
@@ -144,8 +147,28 @@ type GC struct {
 	MinRetentionPeriod *time.Duration
 }
 
+// WithMetadata configures the snapshotter with metadata.
+func WithMetadata(metadata Metadata) Option {
+	return func(c *Config) {
+		c.Metadata = metadata
+	}
+}
+
+// WithContent configures the snapshotter with content.
+func WithContent(content dragonfly.ContentProvider) Option {
+	return func(c *Config) {
+		c.Content = content
+	}
+}
+
 // snapshotter is the implementation of snapshotter.Snapshotter.
 type snapshotter struct {
+	// mu is the mutex for concurrent access.
+	mu sync.Mutex
+
+	// config is the configuration for the snapshotter.
+	config *Config
+
 	// snapshotConcurrency is the concurrency limit for snapshot operations.
 	snapshotConcurrency int
 
@@ -158,15 +181,19 @@ type snapshotter struct {
 	// storage is the storage instance for storage operations.
 	storage storage.Storage
 
-	// registry is the registry instance for registry operations.
-	registry oci.Client
+	// registryCli is the registry instance for registry operations.
+	registryCli oci.Client
 
-	// dragonfly is the dragonfly instance for dragonfly operations.
-	dragonfly dragonfly.Client
+	// dragonflyCli is the dragonfly instance for dragonfly operations.
+	dragonflyCli dragonfly.Client
 }
 
 // New creates a new snapshotter instance.
-func New(config Config) (Snapshotter, error) {
+func New(config Config, opts ...Option) (Snapshotter, error) {
+	for _, opt := range opts {
+		opt(&config)
+	}
+
 	if err := validate(config); err != nil {
 		return nil, err
 	}
@@ -192,14 +219,20 @@ func New(config Config) (Snapshotter, error) {
 		return nil, err
 	}
 
-	registry, err := oci.New(config.RootDir, config.Metadata.Registry)
-	if err != nil {
-		return nil, err
+	var registryCli oci.Client
+	if config.Metadata.Registry.Endpoint != "" {
+		registryCli, err = oci.New(config.RootDir, config.Metadata.Registry)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	dragonfly, err := dragonfly.New(config.Dragonfly, config.Content)
-	if err != nil {
-		return nil, err
+	var dragonflyCli dragonfly.Client
+	if config.Content.Provider != "" {
+		dragonflyCli, err = dragonfly.New(config.Dragonfly, config.Content)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	gcOpts := []gc.Option{}
@@ -228,12 +261,13 @@ func New(config Config) (Snapshotter, error) {
 	go gc.Run(context.Background())
 
 	return &snapshotter{
+		config:              &config,
 		snapshotConcurrency: snapshotConcurrency,
 		restoreConcurrency:  restoreConcurrency,
 		metadata:            metadata,
 		storage:             storage,
-		registry:            registry,
-		dragonfly:           dragonfly,
+		registryCli:         registryCli,
+		dragonflyCli:        dragonflyCli,
 	}, nil
 }
 
@@ -243,19 +277,71 @@ func validate(config Config) error {
 		return errors.New("root directory is required")
 	}
 
-	if config.Metadata.Registry.Endpoint == "" {
-		return errors.New("registry endpoint is required")
+	return nil
+}
+
+// initialize initializes the snapshotter.
+func (s *snapshotter) initialize(opts ...Option) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	config := &Config{}
+	for _, opt := range opts {
+		opt(config)
 	}
 
-	if config.Dragonfly.Endpoint == "" {
-		return errors.New("dragonfly endpoint is required")
+	// Mutate the registryCli if the registryCli is nil or config changed.
+	if s.registryCli == nil ||
+		((config.Metadata.Registry.Endpoint != "" && config.Metadata.Registry.Endpoint != s.config.Metadata.Registry.Endpoint) ||
+			(config.Metadata.Registry.Username != "" && config.Metadata.Registry.Username != s.config.Metadata.Registry.Username) ||
+			(config.Metadata.Registry.Password != "" && config.Metadata.Registry.Password != s.config.Metadata.Registry.Password) ||
+			(config.Metadata.Registry.Insecure != s.config.Metadata.Registry.Insecure)) {
+		registryCli, err := oci.New(s.config.RootDir, config.Metadata.Registry)
+		if err != nil {
+			return err
+		}
+
+		s.registryCli = registryCli
+	}
+
+	// Mutate the dragonflyCli if the dragonflyCli is nil or config changed.
+	if s.dragonflyCli == nil ||
+		((config.Content.Provider != "" && config.Content.Provider != s.config.Content.Provider) ||
+			(config.Content.Bucket != "" && config.Content.Bucket != s.config.Content.Bucket) ||
+			(config.Content.Region != "" && config.Content.Region != s.config.Content.Region) ||
+			(config.Content.Endpoint != "" && config.Content.Endpoint != s.config.Content.Endpoint) ||
+			(config.Content.AccessKeyID != "" && config.Content.AccessKeyID != s.config.Content.AccessKeyID) ||
+			(config.Content.AccessKeySecret != "" && config.Content.AccessKeySecret != s.config.Content.AccessKeySecret)) {
+		dragonflyCli, err := dragonfly.New(s.config.Dragonfly, config.Content)
+		if err != nil {
+			return err
+		}
+
+		s.dragonflyCli = dragonflyCli
+	}
+
+	// Mutate the config.
+	for _, opt := range opts {
+		opt(s.config)
+	}
+
+	if s.registryCli == nil {
+		return errors.New("registry client is nil")
+	}
+
+	if s.dragonflyCli == nil {
+		return errors.New("dragonfly client is nil")
 	}
 
 	return nil
 }
 
 // Snapshot creates a snapshot of the specified files.
-func (s *snapshotter) Snapshot(ctx context.Context, req *SnapshotRequest) error {
+func (s *snapshotter) Snapshot(ctx context.Context, req *SnapshotRequest, opts ...Option) error {
+	if err := s.initialize(opts...); err != nil {
+		return fmt.Errorf("failed to initialize: %w", err)
+	}
+
 	// Forbid creating a snapshot if it already exists.
 	if _, err := s.metadata.GetMetadata(ctx, metadata.Key(req.Name, req.Version)); err == nil {
 		return ErrSnapshotAlreadyExists
@@ -317,7 +403,7 @@ func (s *snapshotter) Snapshot(ctx context.Context, req *SnapshotRequest) error 
 
 			// Upload the file to the dragonfly.
 			digest := storage.ContentDigest(content.Name())
-			if err := s.dragonfly.Upload(ctx, &dragonfly.UploadRequest{
+			if err := s.dragonflyCli.Upload(ctx, &dragonfly.UploadRequest{
 				Digest:  digest,
 				SrcPath: s.storage.GetContentPath(ctx, storage.ParseFilenameFromDigest(digest))}); err != nil {
 				return fmt.Errorf("failed to upload file: %w", err)
@@ -359,13 +445,13 @@ func (s *snapshotter) Snapshot(ctx context.Context, req *SnapshotRequest) error 
 	}
 
 	// Push the config blob.
-	_, err = s.registry.PushBlob(ctx, req.Name, io.NopCloser(bytes.NewReader(configBytes)))
+	_, err = s.registryCli.PushBlob(ctx, req.Name, io.NopCloser(bytes.NewReader(configBytes)))
 	if err != nil {
 		return fmt.Errorf("failed to push config blob: %w", err)
 	}
 
 	// Push the manifest blob.
-	_, err = s.registry.PushManifest(ctx, req.Name, req.Version, manifest)
+	_, err = s.registryCli.PushManifest(ctx, req.Name, req.Version, manifest)
 	if err != nil {
 		return fmt.Errorf("failed to push manifest blob: %w", err)
 	}
@@ -390,7 +476,11 @@ func (s *snapshotter) Snapshot(ctx context.Context, req *SnapshotRequest) error 
 }
 
 // Restore restores the specified files from the snapshot.
-func (s *snapshotter) Restore(ctx context.Context, req *RestoreRequest) error {
+func (s *snapshotter) Restore(ctx context.Context, req *RestoreRequest, opts ...Option) error {
+	if err := s.initialize(opts...); err != nil {
+		return fmt.Errorf("failed to initialize: %w", err)
+	}
+
 	metadataEntry, err := s.metadata.GetMetadata(ctx, metadata.Key(req.Name, req.Version))
 	if err != nil && !errors.Is(err, metadata.ErrKeyNotFound) {
 		return err
@@ -436,13 +526,13 @@ func (s *snapshotter) Restore(ctx context.Context, req *RestoreRequest) error {
 // sync restores the data from remote to local storage.
 func (s *snapshotter) syncFromRemote(ctx context.Context, name, version string) (*metadata.MetadataEntry, error) {
 	// Pull the manifest from registry to get the metadata.
-	manifest, err := s.registry.PullManifest(ctx, name, version)
+	manifest, err := s.registryCli.PullManifest(ctx, name, version)
 	if err != nil {
 		return nil, fmt.Errorf("failed to pull manifest: %w", err)
 	}
 
 	// Pull the config blob from registry.
-	configBlob, err := s.registry.PullBlob(ctx, name, manifest.Config.Digest.String())
+	configBlob, err := s.registryCli.PullBlob(ctx, name, manifest.Config.Digest.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to pull config blob: %w", err)
 	}
@@ -459,7 +549,7 @@ func (s *snapshotter) syncFromRemote(ctx context.Context, name, version string) 
 
 	for _, file := range config.Files {
 		eg.Go(func() error {
-			if err := s.dragonfly.Download(ctx, &dragonfly.DownloadRequest{
+			if err := s.dragonflyCli.Download(ctx, &dragonfly.DownloadRequest{
 				Digest:     file.Digest,
 				OutputPath: s.storage.GetContentPath(ctx, storage.ParseFilenameFromDigest(file.Digest)),
 			}); err != nil {

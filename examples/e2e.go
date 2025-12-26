@@ -82,25 +82,8 @@ func getEnv(key, defaultValue string) string {
 func getConfig() snapshotter.Config {
 	return snapshotter.Config{
 		RootDir: getEnv("SNAPSHOTTER_ROOT_DIR", filepath.Join(os.TempDir(), "snapshotter")),
-		Metadata: snapshotter.Metadata{
-			Registry: oci.Registry{
-				Endpoint:  getEnv("REGISTRY_ENDPOINT", "http://localhost:5000"),
-				Username:  getEnv("REGISTRY_USERNAME", "admin"),
-				Password:  getEnv("REGISTRY_PASSWORD", "admin"),
-				Namespace: getEnv("REGISTRY_NAMESPACE", "snapshotter"),
-				Insecure:  getEnv("REGISTRY_INSECURE", "false") == "true",
-			},
-		},
 		Dragonfly: dragonfly.Dragonfly{
 			Endpoint: getEnv("DRAGONFLY_ENDPOINT", "unix:///var/run/dragonfly.sock"),
-		},
-		Content: dragonfly.ContentProvider{
-			Provider:        getEnv("CONTENT_PROVIDER", "s3"),
-			Bucket:          getEnv("CONTENT_BUCKET", "test-bucket"),
-			Region:          getEnv("CONTENT_REGION", "us-east-1"),
-			Endpoint:        getEnv("CONTENT_ENDPOINT", "localhost:9000"),
-			AccessKeyID:     getEnv("CONTENT_ACCESS_KEY_ID", "minioadmin"),
-			AccessKeySecret: getEnv("CONTENT_ACCESS_KEY_SECRET", "minioadmin"),
 		},
 	}
 }
@@ -224,6 +207,35 @@ func main() {
 	}
 	defer os.RemoveAll(testDir)
 
+	// Create temporary directory for output.
+	outputDir := filepath.Join(os.TempDir(), "snapshotter-restore-*")
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		slog.Error("failed to create output directory", "err", err)
+		os.Exit(1)
+	}
+	defer os.RemoveAll(outputDir)
+
+	// Prepare snapshot and restore options.
+	opts := []snapshotter.Option{
+		snapshotter.WithMetadata(snapshotter.Metadata{
+			Registry: oci.Registry{
+				Endpoint:  getEnv("REGISTRY_ENDPOINT", "http://localhost:5000"),
+				Username:  getEnv("REGISTRY_USERNAME", "admin"),
+				Password:  getEnv("REGISTRY_PASSWORD", "admin"),
+				Namespace: getEnv("REGISTRY_NAMESPACE", "snapshotter"),
+				Insecure:  getEnv("REGISTRY_INSECURE", "false") == "true",
+			},
+		}),
+		snapshotter.WithContent(dragonfly.ContentProvider{
+			Provider:        getEnv("CONTENT_PROVIDER", "s3"),
+			Bucket:          getEnv("CONTENT_BUCKET", "test-bucket"),
+			Region:          getEnv("CONTENT_REGION", "us-east-1"),
+			Endpoint:        getEnv("CONTENT_ENDPOINT", "localhost:9000"),
+			AccessKeyID:     getEnv("CONTENT_ACCESS_KEY_ID", "minioadmin"),
+			AccessKeySecret: getEnv("CONTENT_ACCESS_KEY_SECRET", "minioadmin"),
+		}),
+	}
+
 	// Test cases with different configurations.
 	testCases := []struct {
 		name, version    string
@@ -253,17 +265,16 @@ func main() {
 				Version: tc.version,
 				BaseDir: checkpoint.baseDir,
 				Files:   checkpoint.files,
-			}); err != nil {
+			}, opts...); err != nil {
 				slog.Error("failed to snapshot", "name", tc.name, "version", tc.version, "err", err)
 				return
 			}
 
-			outputDir := filepath.Join(os.TempDir(), "snapshotter-restore", tc.name, tc.version)
 			if err := s.Restore(context.Background(), &snapshotter.RestoreRequest{
 				Name:      tc.name,
 				Version:   tc.version,
-				OutputDir: outputDir,
-			}); err != nil {
+				OutputDir: filepath.Join(outputDir, tc.name, tc.version),
+			}, opts...); err != nil {
 				slog.Error("failed to restore", "name", tc.name, "version", tc.version, "err", err)
 				return
 			}
