@@ -18,50 +18,13 @@ Snapshotter is a high-performance file snapshotting and restoration library for 
 
 ## Installation
 
-```bas
+```bash
 go get d7y.io/snapshotter
 ```
-
 
 ## Quick Start
 
 Refer to [examples](examples/main.go).
-
-## Configuration
-
-### Config Options
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `RootDir` | `string` | Root directory for local storage and metadata |
-| `Metadata.Registry` | `oci.Registry` | OCI registry configuration for metadata storage |
-| `Dragonfly` | `dragonfly.Dragonfly` | Dragonfly client configuration |
-| `Content` | `dragonfly.ContentProvider` | Content storage provider configuration |
-
-### OCI Registry Configuration
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `Endpoint` | `string` | Registry endpoint URL |
-| `Username` | `string` | Authentication username |
-| `Password` | `string` | Authentication password |
-| `Namespace` | `string` | Registry namespace/project |
-
-### Dragonfly Configuration
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `Endpoint` | `string` | Dragonfly daemon endpoint (e.g., `unix:///var/run/dragonfly.sock`) |
-
-### Content Provider Configuration
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `Provider` | `string` | Storage provider type (e.g., `s3`, `oss`) |
-| `Region` | `string` | Storage region |
-| `Endpoint` | `string` | Storage endpoint URL |
-| `AccessKeyID` | `string` | Access key ID |
-| `AccessKeySecret` | `string` | Access key secret |
 
 ## Architecture
 
@@ -119,49 +82,6 @@ Refer to [examples](examples/main.go).
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Snapshot Workflow
-
-```
-┌─────────────┐
-│  Snapshot   │
-│  Request    │
-└──────┬──────┘
-       │
-       ▼
-┌──────────────────────────────────────────────────────┐
-│ 1. Hash & Store Content                              │
-│    - Compute XXH3 hash                               │
-│    - Encode as sparse file                           │
-│    - Store in content/xxh3/{hash}                    │
-│    - Create hardlink to snapshot/ (if read-only)     │
-└──────┬───────────────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────────────┐
-│ 2. Upload to Dragonfly                               │
-│    - Upload to object storage via Dragonfly          │
-│    - Enable P2P distribution                         │
-└──────┬───────────────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────────────┐
-│ 3. Build & Push OCI Manifest                         │
-│    - Marshal config (file list + metadata)           │
-│    - Push config blob to registry                    │
-│    - Build manifest with config digest               │
-│    - Tag and push manifest                           │
-└──────┬───────────────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────────────┐
-│ 4. Store Local Metadata                              │
-│    - Store snapshot metadata in bbolt                │
-│    - Update content reference count                  │
-│    - Track creation & access time                    │
-└──────────────────────────────────────────────────────┘
-```
-
-
 ## Storage Directory Structure
 
 ```
@@ -171,55 +91,6 @@ $RootDir/
 │   ├── content/            # content-addressable storage
 │   └── snapshot/           # zardlinked snapshots for read-only files
 ```
-
-## Building
-
-```bash
-# Download dependencies
-make mod-download
-
-# Build the example
-make build
-
-# Run all checks
-make check
-```
-
-## Testing
-
-```bash
-# Run all tests
-make test
-
-# Run tests with coverage
-make test-coverage
-```
-
-## Development
-
-```bash
-# Format code
-make fmt
-
-# Run linter (requires golangci-lint)
-make lint
-
-# Run go vet
-make vet
-
-# Tidy modules
-make mod-tidy
-```
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
 
 ## License
 
