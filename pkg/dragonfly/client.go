@@ -24,13 +24,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	common "d7y.io/api/v2/pkg/apis/common/v2"
+	dfdaemon "d7y.io/api/v2/pkg/apis/dfdaemon/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
-
-	common "d7y.io/api/v2/pkg/apis/common/v2"
-	dfdaemon "d7y.io/api/v2/pkg/apis/dfdaemon/v2"
 )
 
 const (

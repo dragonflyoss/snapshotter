@@ -28,12 +28,13 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"d7y.io/snapshotter/internal/gc"
 	"d7y.io/snapshotter/internal/metadata"
 	"d7y.io/snapshotter/internal/storage"
 	"d7y.io/snapshotter/pkg/dragonfly"
 	"d7y.io/snapshotter/pkg/oci"
-	"golang.org/x/sync/errgroup"
 )
 
 var (

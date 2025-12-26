@@ -91,10 +91,10 @@ func TestEncodeDecodeSparseFile(t *testing.T) {
 	}
 
 	fileSize := int64(1024 * 1024)
-	f.Truncate(fileSize)
-	f.WriteAt([]byte("START"), 0)
-	f.WriteAt([]byte("MIDDLE"), 512*1024)
-	f.WriteAt([]byte("END"), fileSize-3)
+	_ = f.Truncate(fileSize)
+	_, _ = f.WriteAt([]byte("START"), 0)
+	_, _ = f.WriteAt([]byte("MIDDLE"), 512*1024)
+	_, _ = f.WriteAt([]byte("END"), fileSize-3)
 	f.Close()
 
 	var buf bytes.Buffer
@@ -115,13 +115,13 @@ func TestEncodeDecodeSparseFile(t *testing.T) {
 	defer outFile.Close()
 
 	buf1 := make([]byte, 5)
-	outFile.ReadAt(buf1, 0)
+	_, _ = outFile.ReadAt(buf1, 0)
 	if string(buf1) != "START" {
 		t.Errorf("got %q, want START", buf1)
 	}
 
 	buf2 := make([]byte, 6)
-	outFile.ReadAt(buf2, 512*1024)
+	_, _ = outFile.ReadAt(buf2, 512*1024)
 	if string(buf2) != "MIDDLE" {
 		t.Errorf("got %q, want MIDDLE", buf2)
 	}

@@ -1,0 +1,55 @@
+version: "2"
+run:
+  modules-download-mode: readonly
+output:
+  formats:
+    text:
+      path: stdout
+      print-linter-name: true
+      print-issued-lines: true
+linters:
+  default: none
+  enable:
+    - errcheck
+    - goconst
+    - gocyclo
+    - govet
+    - misspell
+    - staticcheck
+  settings:
+    gocyclo:
+      min-complexity: 100
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - staticcheck
+        text: 'SA1019:'
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+      - test/mocks
+issues:
+  new: true
+formatters:
+  enable:
+    - gci
+    - gofmt
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(d7y.io/snapshotter)
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

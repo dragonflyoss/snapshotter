@@ -25,10 +25,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/zeebo/xxh3"
+
 	"d7y.io/snapshotter/internal/metadata"
 	"d7y.io/snapshotter/pkg/fs"
 	"d7y.io/snapshotter/pkg/sparsefile"
-	"github.com/zeebo/xxh3"
 )
 
 const (
@@ -274,10 +275,10 @@ func (s *storage) Export(ctx context.Context, outputDir string, file metadata.Fi
 		return fmt.Errorf("failed to ensure destination directory for %q: %w", destPath, err)
 	}
 
-	var err error
+	var exportErr error
 	if file.ReadOnly {
 		srcPath := filepath.Join(s.snapshotDir, srcFilename)
-		err = fs.HardLink(srcPath, destPath)
+		exportErr = fs.HardLink(srcPath, destPath)
 	} else {
 		srcPath := filepath.Join(s.contentDir, srcFilename)
 		srcFile, err := os.Open(srcPath)
@@ -285,10 +286,11 @@ func (s *storage) Export(ctx context.Context, outputDir string, file metadata.Fi
 			return fmt.Errorf("failed to open source content file %q: %w", srcPath, err)
 		}
 		defer srcFile.Close()
-		err = sparsefile.Decode(srcFile, destPath)
+
+		exportErr = sparsefile.Decode(srcFile, destPath)
 	}
-	if err != nil {
-		return fmt.Errorf("failed to export file %q: %w", destPath, err)
+	if exportErr != nil {
+		return fmt.Errorf("failed to export file %q: %w", destPath, exportErr)
 	}
 
 	// Apply file metadata only on successful export.
