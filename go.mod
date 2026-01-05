@@ -1,6 +1,6 @@
 module d7y.io/snapshotter
 
-go 1.23.8
+go 1.25.5
 
 require (
 	d7y.io/api/v2 v2.2.8
