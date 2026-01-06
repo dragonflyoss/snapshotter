@@ -1,7 +1,7 @@
 # Snapshotter
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Go Version](https://img.shields.io/badge/Go-1.24.6+-00ADD8?logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.25.5+-00ADD8?logo=go)](https://go.dev/)
 
 Snapshotter is a high-performance file snapshotting and restoration library for Go, designed to work with [Dragonfly](https://d7y.io/) for P2P-accelerated file distribution. It provides efficient file deduplication using content-addressable storage and supports OCI-compatible registries for metadata management.
 
