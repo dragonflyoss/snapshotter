@@ -3,7 +3,7 @@ module d7y.io/snapshotter
 go 1.25.5
 
 require (
-	d7y.io/api/v2 v2.2.8
+	d7y.io/api/v2 v2.2.14
 	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
 	github.com/opencontainers/go-digest v1.0.0
