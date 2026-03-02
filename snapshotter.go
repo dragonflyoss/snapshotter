@@ -549,11 +549,16 @@ func (s *snapshotter) syncFromRemote(ctx context.Context, name, version string) 
 
 	for _, file := range config.Files {
 		eg.Go(func() error {
-			if err := s.dragonflyCli.Download(ctx, &dragonfly.DownloadRequest{
-				Digest:     file.Digest,
-				OutputPath: s.storage.GetContentPath(ctx, storage.ParseFilenameFromDigest(file.Digest)),
-			}); err != nil {
-				return fmt.Errorf("failed to download file: %w", err)
+			outputPath := s.storage.GetContentPath(ctx, storage.ParseFilenameFromDigest(file.Digest))
+			if _, err := os.Stat(outputPath); err == nil {
+				slog.Debug("file already exists, skip download", "path", outputPath)
+			} else {
+				if err := s.dragonflyCli.Download(ctx, &dragonfly.DownloadRequest{
+					Digest:     file.Digest,
+					OutputPath: outputPath,
+				}); err != nil {
+					return fmt.Errorf("failed to download file: %w", err)
+				}
 			}
 
 			// Restore the snapshot from content for read only file.
