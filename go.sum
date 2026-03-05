@@ -1,5 +1,5 @@
-d7y.io/api/v2 v2.2.14 h1:wLkcQkx2r4WaTLCr5vx34g6wKOhLlOkOG2Mcje9W9tM=
-d7y.io/api/v2 v2.2.14/go.mod h1:JNKPDQg6BoC06brp7cv8PHbsPbnYelko/IJFuWn6M5M=
+d7y.io/api/v2 v2.2.20 h1:ECoMQWZxQxLpu5FN4SAOPGLTjUSprCpVSbIFsfITpGI=
+d7y.io/api/v2 v2.2.20/go.mod h1:JNKPDQg6BoC06brp7cv8PHbsPbnYelko/IJFuWn6M5M=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
