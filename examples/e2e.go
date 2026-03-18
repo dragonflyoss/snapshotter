@@ -75,17 +75,24 @@ func getEnv(key, defaultValue string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
+
 	return defaultValue
 }
 
 // getConfig reads configuration from environment variables.
 func getConfig() snapshotter.Config {
-	return snapshotter.Config{
+	snapshotter := snapshotter.Config{
 		RootDir: getEnv("SNAPSHOTTER_ROOT_DIR", filepath.Join(os.TempDir(), "snapshotter")),
 		Dragonfly: dragonfly.Dragonfly{
 			Endpoint: getEnv("DRAGONFLY_ENDPOINT", "unix:///var/run/dragonfly.sock"),
 		},
 	}
+
+	if storageDir := os.Getenv("DRAGONFLY_STORAGE_DIR"); storageDir != "" {
+		snapshotter.Dragonfly.StorageDir = &storageDir
+	}
+
+	return snapshotter
 }
 
 // generateTestCheckpoint creates a test checkpoint directory with mock files.
