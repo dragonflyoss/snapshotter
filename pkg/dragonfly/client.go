@@ -134,7 +134,6 @@ func (c *client) remapPath(path string) string {
 	}
 
 	relativePath := strings.TrimPrefix(path, c.snapshotterRootDir)
-	slog.Info("remapping path for Dragonfly", "originalPath", path, "relativePath", relativePath, "storageDir", *c.storageDir, "snapshotterRootDir", c.snapshotterRootDir)
 	return filepath.Join(*c.storageDir, relativePath)
 }
 
@@ -157,7 +156,6 @@ func (c *client) Download(ctx context.Context, req *DownloadRequest) error {
 	}
 
 	outputPath := c.remapPath(req.OutputPath)
-	slog.Info("starting to download file from Dragonfly", "digest", req.Digest, "outputPath", outputPath)
 	request := &dfdaemon.DownloadPersistentTaskRequest{
 		Url: c.objectStorageURL(req.Digest),
 		ObjectStorage: &common.ObjectStorage{
@@ -210,7 +208,6 @@ func (c *client) Upload(ctx context.Context, req *UploadRequest) error {
 	}
 
 	srcPath := c.remapPath(req.SrcPath)
-	slog.Info("starting to upload file to Dragonfly", "digest", req.Digest, "srcPath", srcPath)
 	request := &dfdaemon.UploadPersistentTaskRequest{
 		Url: c.objectStorageURL(req.Digest),
 		ObjectStorage: &common.ObjectStorage{
