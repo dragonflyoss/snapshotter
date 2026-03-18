@@ -260,7 +260,10 @@ func validate(config Config) error {
 // initialize initializes the snapshotter.
 func (s *snapshotter) initialize(opts ...Option) (oci.Client, dragonfly.Client, error) {
 	config := &Config{}
-	copier.Copy(&config, &s.config)
+	if err := copier.Copy(&config, &s.config); err != nil {
+		return nil, nil, fmt.Errorf("failed to copy config: %w", err)
+	}
+
 	for _, opt := range opts {
 		opt(config)
 	}
