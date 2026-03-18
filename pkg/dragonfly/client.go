@@ -34,13 +34,19 @@ import (
 
 const (
 	// defaultUploadPersistentReplicaCount is the default replica count for upload persistent task.
-	defaultUploadPersistentReplicaCount = 3
+	defaultUploadPersistentReplicaCount = 2
 )
 
 // Dragonfly defines the Dragonfly configuration for the snapshotter.
 type Dragonfly struct {
 	// Endpoint is the endpoint of the Dragonfly, such as unix:///var/run/dragonfly.sock.
 	Endpoint string
+
+	// StorageDir is the cache storage directory for Dragonfly in the DaemonSet,
+	// used to store downloaded files. Dragonfly mounts this host path into
+	// the pod as a volume. For hardlinks to work, the Dragonfly daemon must
+	// remap the snapshotter's host path to the corresponding DaemonSet path.
+	StorageDir *string
 }
 
 // ContentProvider defines the content configuration for the snapshotter.
@@ -82,6 +88,21 @@ type UploadRequest struct {
 	SrcPath string
 }
 
+// client is the client for Dragonfly.
+type client struct {
+	// conn is the grpc connection.
+	conn *grpc.ClientConn
+
+	// provider is the content provider.
+	provider ContentProvider
+
+	// snapshotterRootDir is the root directory of the snapshotter on the host.
+	snapshotterRootDir string
+
+	// storageDir is the cache storage directory for Dragonfly in the DaemonSet,
+	storageDir *string
+}
+
 // Client is the interface for interacting with Dragonfly.
 type Client interface {
 	// Download downloads the file from Dragonfly.
@@ -92,24 +113,29 @@ type Client interface {
 }
 
 // New creates a new client for Dragonfly.
-func New(dragonfly Dragonfly, provider ContentProvider) (Client, error) {
+func New(dragonfly Dragonfly, provider ContentProvider, snapshotterRootDir string) (Client, error) {
 	conn, err := grpc.NewClient(dragonfly.Endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, err
 	}
+
 	return &client{
-		conn:     conn,
-		provider: provider,
+		conn:               conn,
+		provider:           provider,
+		snapshotterRootDir: snapshotterRootDir,
+		storageDir:         dragonfly.StorageDir,
 	}, nil
 }
 
-// client is the client for Dragonfly.
-type client struct {
-	// conn is the grpc connection.
-	conn *grpc.ClientConn
+// remapPath remaps the path from the snapshotter's host path to the corresponding DaemonSet path.
+func (c *client) remapPath(path string) string {
+	if c.storageDir == nil {
+		return path
+	}
 
-	// provider is the content provider.
-	provider ContentProvider
+	relativePath := strings.TrimPrefix(path, c.snapshotterRootDir)
+	slog.Info("remapping path for Dragonfly", "originalPath", path, "relativePath", relativePath, "storageDir", *c.storageDir, "snapshotterRootDir", c.snapshotterRootDir)
+	return filepath.Join(*c.storageDir, relativePath)
 }
 
 // objectStorageURL constructs the object storage url for the given digest.
@@ -130,6 +156,8 @@ func (c *client) Download(ctx context.Context, req *DownloadRequest) error {
 		return errors.New("invalid download request")
 	}
 
+	outputPath := c.remapPath(req.OutputPath)
+	slog.Info("starting to download file from Dragonfly", "digest", req.Digest, "outputPath", outputPath)
 	request := &dfdaemon.DownloadPersistentTaskRequest{
 		Url: c.objectStorageURL(req.Digest),
 		ObjectStorage: &common.ObjectStorage{
@@ -138,7 +166,7 @@ func (c *client) Download(ctx context.Context, req *DownloadRequest) error {
 			AccessKeyId:     &c.provider.AccessKeyID,
 			AccessKeySecret: &c.provider.AccessKeySecret,
 		},
-		OutputPath:    &req.OutputPath,
+		OutputPath:    &outputPath,
 		ForceHardLink: true,
 	}
 
@@ -181,6 +209,8 @@ func (c *client) Upload(ctx context.Context, req *UploadRequest) error {
 		return errors.New("invalid upload request")
 	}
 
+	srcPath := c.remapPath(req.SrcPath)
+	slog.Info("starting to upload file to Dragonfly", "digest", req.Digest, "srcPath", srcPath)
 	request := &dfdaemon.UploadPersistentTaskRequest{
 		Url: c.objectStorageURL(req.Digest),
 		ObjectStorage: &common.ObjectStorage{
@@ -189,7 +219,7 @@ func (c *client) Upload(ctx context.Context, req *UploadRequest) error {
 			AccessKeyId:     &c.provider.AccessKeyID,
 			AccessKeySecret: &c.provider.AccessKeySecret,
 		},
-		Path:                   req.SrcPath,
+		Path:                   srcPath,
 		PersistentReplicaCount: defaultUploadPersistentReplicaCount,
 	}
 
