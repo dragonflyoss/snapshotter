@@ -277,10 +277,11 @@ func main() {
 				return
 			}
 
+			restoreOutputDir := filepath.Join(outputDir, tc.name, tc.version)
 			if err := s.Restore(context.Background(), &snapshotter.RestoreRequest{
 				Name:      tc.name,
 				Version:   tc.version,
-				OutputDir: filepath.Join(outputDir, tc.name, tc.version),
+				OutputDir: &restoreOutputDir,
 			}, opts...); err != nil {
 				slog.Error("failed to restore", "name", tc.name, "version", tc.version, "err", err)
 				return

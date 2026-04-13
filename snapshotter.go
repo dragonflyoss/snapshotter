@@ -88,7 +88,8 @@ type RestoreRequest struct {
 	Version string
 
 	// OutputDir is the directory where the files will be restored.
-	OutputDir string
+	// If OutputDir is nil, only the download is performed without exporting files.
+	OutputDir *string
 }
 
 // Config defines the configuration for the snapshotter.
@@ -452,11 +453,13 @@ func (s *snapshotter) Restore(ctx context.Context, req *RestoreRequest, opts ...
 				return fmt.Errorf("failed to get content: %w", err)
 			}
 
-			if err := s.storage.Export(ctx,
-				req.OutputDir,
-				file,
-				storage.ParseFilenameFromDigest(file.Digest)); err != nil {
-				return fmt.Errorf("failed to export file: %w", err)
+			if req.OutputDir != nil {
+				if err := s.storage.Export(ctx,
+					*req.OutputDir,
+					file,
+					storage.ParseFilenameFromDigest(file.Digest)); err != nil {
+					return fmt.Errorf("failed to export file: %w", err)
+				}
 			}
 
 			return nil
