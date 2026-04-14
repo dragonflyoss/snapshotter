@@ -70,6 +70,7 @@ func GetFileMetadata(info os.FileInfo) (FileMetadata, error) {
 	metadata.Mode = uint32(info.Mode().Perm())
 	metadata.Size = info.Size()
 	metadata.ModTime = info.ModTime()
+
 	// Set Typeflag.
 	switch {
 	case info.Mode().IsRegular():
