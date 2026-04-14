@@ -110,6 +110,7 @@ func validateRelativePath(baseDir, relPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to get absolute path of baseDir: %w", err)
 	}
+
 	realPath, err := filepath.Abs(fullPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve absolute path: %w", err)
@@ -126,10 +127,10 @@ func validateRelativePath(baseDir, relPath string) (string, error) {
 func New(rootDir string) (Storage, error) {
 	contentDir := filepath.Join(rootDir, "storage", "content", ContentHashAlgorithm)
 	snapshotDir := filepath.Join(rootDir, "storage", "snapshot", ContentHashAlgorithm)
-
 	if err := os.MkdirAll(contentDir, DirPerm); err != nil {
 		return nil, fmt.Errorf("failed to create content directory: %w", err)
 	}
+
 	if err := os.MkdirAll(snapshotDir, DirPerm); err != nil {
 		return nil, fmt.Errorf("failed to create snapshot directory: %w", err)
 	}
@@ -182,6 +183,7 @@ func (s *storage) WriteContent(ctx context.Context, baseDir string, file File) (
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temporary content file: %w", err)
 	}
+
 	tempPath := tempFile.Name()
 	defer func() {
 		// Remove temp file only if it still exists (i.e., Rename hasn't succeeded).
@@ -251,9 +253,9 @@ func (s *storage) RestoreSnapshotFromContent(ctx context.Context, filename strin
 	if err != nil {
 		return fmt.Errorf("failed to create temp snapshot file: %w", err)
 	}
+
 	tempPath := tempFile.Name()
 	_ = tempFile.Close()
-
 	defer func() { _ = os.Remove(tempPath) }()
 
 	if err := sparsefile.Decode(srcFile, tempPath); err != nil {
@@ -299,6 +301,7 @@ func (s *storage) Export(ctx context.Context, outputDir string, file metadata.Fi
 			slog.Warn("failed to chmod exported file", "path", destPath, "mode", file.Metadata.Mode, "err", err)
 		}
 	}
+
 	if !file.Metadata.ModTime.IsZero() {
 		if err := os.Chtimes(destPath, file.Metadata.ModTime, file.Metadata.ModTime); err != nil {
 			slog.Warn("failed to set modtime on exported file", "path", destPath, "modtime", file.Metadata.ModTime, "err", err)

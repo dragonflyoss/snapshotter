@@ -87,8 +87,9 @@ type RestoreRequest struct {
 	// Version is the version of the snapshot.
 	Version string
 
-	// OutputDir is the directory where the files will be restored.
-	OutputDir string
+	// OutputDir is the directory where the files will be restored. If OutputDir is nil,
+	// only the download is performed without exporting files.
+	OutputDir *string
 }
 
 // Config defines the configuration for the snapshotter.
@@ -443,17 +444,26 @@ func (s *snapshotter) Restore(ctx context.Context, req *RestoreRequest, opts ...
 		}
 	}
 
+	// Export the files to the output directory if specified.
+	if req.OutputDir == nil {
+		return s.export(ctx, *req.OutputDir, metadataEntry.Config.Files)
+	}
+
+	return nil
+}
+
+// export exports the files to the output directory.
+func (s *snapshotter) export(ctx context.Context, outputDir string, files []metadata.File) error {
 	var eg errgroup.Group
 	eg.SetLimit(s.restoreConcurrency)
-	for _, file := range metadataEntry.Config.Files {
+	for _, file := range files {
 		eg.Go(func() error {
-			_, err := s.metadata.GetContent(ctx, file.Digest)
-			if err != nil {
+			if _, err := s.metadata.GetContent(ctx, file.Digest); err != nil {
 				return fmt.Errorf("failed to get content: %w", err)
 			}
 
 			if err := s.storage.Export(ctx,
-				req.OutputDir,
+				outputDir,
 				file,
 				storage.ParseFilenameFromDigest(file.Digest)); err != nil {
 				return fmt.Errorf("failed to export file: %w", err)

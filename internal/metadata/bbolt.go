@@ -70,7 +70,7 @@ func newBbolt(rootDir string) (*bbolt, error) {
 	}
 
 	// Make sure the bucket exists.
-	err = db.Update(func(tx *bboltdb.Tx) error {
+	if err := db.Update(func(tx *bboltdb.Tx) error {
 		for _, name := range []string{metadataBucketName, contentBucketName, contentMetadataBucketName} {
 			if _, err := tx.CreateBucketIfNotExists([]byte(name)); err != nil {
 				return fmt.Errorf("failed to create bucket %s: %w", name, err)
@@ -78,8 +78,7 @@ func newBbolt(rootDir string) (*bbolt, error) {
 		}
 
 		return nil
-	})
-	if err != nil {
+	}); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to initialize bucket: %w", err)
 	}
@@ -129,6 +128,7 @@ func (b *bbolt) GetMetadata(_ context.Context, key string) (*MetadataEntry, erro
 	}); err != nil {
 		return nil, err
 	}
+
 	return &entry, nil
 }
 
@@ -147,6 +147,7 @@ func (b *bbolt) GetContent(_ context.Context, key string) (*File, error) {
 	}); err != nil {
 		return nil, err
 	}
+
 	return &file, nil
 }
 
@@ -165,6 +166,7 @@ func (b *bbolt) GetContentMetadata(_ context.Context, key string) (*ContentMetad
 	}); err != nil {
 		return nil, err
 	}
+
 	return &entry, nil
 }
 
@@ -216,14 +218,17 @@ func (b *bbolt) IterateMetadata(_ context.Context, fn func(key string, entry Met
 		if bucket == nil {
 			return fmt.Errorf("metadata bucket not found")
 		}
+
 		return bucket.ForEach(func(k, v []byte) error {
 			if k == nil || v == nil {
 				return nil
 			}
+
 			var entry MetadataEntry
 			if err := json.Unmarshal(v, &entry); err != nil {
 				return fmt.Errorf("unmarshal metadata entry for key %q: %w", string(k), err)
 			}
+
 			return fn(string(k), entry)
 		})
 	})
@@ -266,9 +271,11 @@ func (b *bbolt) Prune(_ context.Context, key string) ([]File, error) {
 				if err := tx.Bucket([]byte(contentMetadataBucketName)).Delete([]byte(digest)); err != nil {
 					return fmt.Errorf("failed to delete content metadata for %s: %w", digest, err)
 				}
+
 				if err := tx.Bucket([]byte(contentBucketName)).Delete([]byte(digest)); err != nil {
 					return fmt.Errorf("failed to delete content entry for %s: %w", digest, err)
 				}
+
 				prunedContent = append(prunedContent, file)
 			} else {
 				contentMetadata.References = newRefs
@@ -279,9 +286,11 @@ func (b *bbolt) Prune(_ context.Context, key string) ([]File, error) {
 		}
 		return nil
 	})
+
 	if err != nil {
 		return nil, err
 	}
+
 	return prunedContent, nil
 }
 
