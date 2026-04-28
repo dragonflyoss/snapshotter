@@ -68,6 +68,9 @@ type ContentProvider struct {
 
 	// AccessKeySecret is the access key secret for the content.
 	AccessKeySecret string
+
+	// InsecureSkipVerify indicates whether to skip TLS verification when accessing the content.
+	InsecureSkipVerify bool
 }
 
 // DownloadRequest defines the request for downloading a file from Dragonfly.
@@ -159,10 +162,11 @@ func (c *client) Download(ctx context.Context, req *DownloadRequest) error {
 	request := &dfdaemon.DownloadPersistentTaskRequest{
 		Url: c.objectStorageURL(req.Digest),
 		ObjectStorage: &common.ObjectStorage{
-			Region:          &c.provider.Region,
-			Endpoint:        &c.provider.Endpoint,
-			AccessKeyId:     &c.provider.AccessKeyID,
-			AccessKeySecret: &c.provider.AccessKeySecret,
+			Region:             &c.provider.Region,
+			Endpoint:           &c.provider.Endpoint,
+			AccessKeyId:        &c.provider.AccessKeyID,
+			AccessKeySecret:    &c.provider.AccessKeySecret,
+			InsecureSkipVerify: &c.provider.InsecureSkipVerify,
 		},
 		OutputPath:    &outputPath,
 		ForceHardLink: true,
