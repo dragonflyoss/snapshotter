@@ -445,7 +445,7 @@ func (s *snapshotter) Restore(ctx context.Context, req *RestoreRequest, opts ...
 	}
 
 	// Export the files to the output directory if specified.
-	if req.OutputDir == nil {
+	if req.OutputDir != nil {
 		return s.export(ctx, *req.OutputDir, metadataEntry.Config.Files)
 	}
 
