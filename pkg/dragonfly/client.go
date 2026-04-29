@@ -215,10 +215,11 @@ func (c *client) Upload(ctx context.Context, req *UploadRequest) error {
 	request := &dfdaemon.UploadPersistentTaskRequest{
 		Url: c.objectStorageURL(req.Digest),
 		ObjectStorage: &common.ObjectStorage{
-			Region:          &c.provider.Region,
-			Endpoint:        &c.provider.Endpoint,
-			AccessKeyId:     &c.provider.AccessKeyID,
-			AccessKeySecret: &c.provider.AccessKeySecret,
+			Region:             &c.provider.Region,
+			Endpoint:           &c.provider.Endpoint,
+			AccessKeyId:        &c.provider.AccessKeyID,
+			AccessKeySecret:    &c.provider.AccessKeySecret,
+			InsecureSkipVerify: &c.provider.InsecureSkipVerify,
 		},
 		Path:                   srcPath,
 		PersistentReplicaCount: defaultUploadPersistentReplicaCount,
