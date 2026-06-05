@@ -33,6 +33,9 @@ import (
 )
 
 const (
+	// defaultSnapshotterSubpath is the default subpath for the snapshotter in the object storage.
+	defaultSnapshotterSubpath = "d7y/snapshotter"
+
 	// defaultUploadPersistentReplicaCount is the default replica count for upload persistent task.
 	defaultUploadPersistentReplicaCount = 2
 )
@@ -149,7 +152,7 @@ func (c *client) objectStorageURL(digest string) string {
 		return ""
 	}
 
-	return c.provider.Provider + "://" + filepath.Join(c.provider.Bucket, parts[0], parts[1])
+	return c.provider.Provider + "://" + filepath.Join(c.provider.Bucket, defaultSnapshotterSubpath, parts[0], parts[1])
 }
 
 // Download downloads the file from Dragonfly.
