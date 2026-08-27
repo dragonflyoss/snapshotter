@@ -54,6 +54,10 @@ const (
 
 	// defaultRestoreConcurrency is the default concurrency limit for restore operations.
 	defaultRestoreConcurrency = 5
+
+	// defaultDownloadTimeout bounds a shared content download so a stuck
+	// transfer cannot hold its singleflight key forever.
+	defaultDownloadTimeout = 30 * time.Minute
 )
 
 // Option is a function that configures the snapshotter.
@@ -187,6 +191,9 @@ type snapshotter struct {
 	// storage is the storage instance for storage operations.
 	storage storage.Storage
 
+	// downloadTimeout bounds each shared content download flight.
+	downloadTimeout time.Duration
+
 	contentDownloads singleflight.Group
 }
 
@@ -221,6 +228,11 @@ func New(config Config, opts ...Option) (Snapshotter, error) {
 		return nil, err
 	}
 
+	// Sweep staging directories orphaned by a previous crash.
+	if err := cleanupOrphanStagingDirs(filepath.Dir(storage.GetContentPath(context.Background(), "placeholder")), defaultDownloadTimeout); err != nil {
+		slog.Warn("failed to clean up orphan staging directories", "error", err)
+	}
+
 	gcOpts := []gc.Option{}
 	if interval := config.GC.Interval; interval != nil {
 		gcOpts = append(gcOpts, gc.WithInterval(*interval))
@@ -252,6 +264,7 @@ func New(config Config, opts ...Option) (Snapshotter, error) {
 		restoreConcurrency:  restoreConcurrency,
 		metadata:            metadata,
 		storage:             storage,
+		downloadTimeout:     defaultDownloadTimeout,
 	}, nil
 }
 
@@ -488,8 +501,13 @@ func (s *snapshotter) ensureContent(ctx context.Context, file metadata.File, cli
 		return err
 	}
 
-	downloadCtx := context.WithoutCancel(ctx)
+	timeout := s.downloadTimeout
+	if timeout <= 0 {
+		timeout = defaultDownloadTimeout
+	}
 	result := s.contentDownloads.DoChan(filename, func() (any, error) {
+		downloadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+		defer cancel()
 		return nil, s.downloadContent(downloadCtx, filename, file.Digest, client)
 	})
 	select {
@@ -498,6 +516,34 @@ func (s *snapshotter) ensureContent(ctx context.Context, file metadata.File, cli
 	case result := <-result:
 		return result.Err
 	}
+}
+
+func cleanupOrphanStagingDirs(contentDir string, maxAge time.Duration) error {
+	// Staging directories left behind by a crashed process are not tracked
+	// by the metadata store, so sweep them here based on their age.
+	stagingDirs, err := filepath.Glob(filepath.Join(contentDir, ".download-*"))
+	if err != nil {
+		return fmt.Errorf("failed to list staging directories: %w", err)
+	}
+
+	for _, stagingDir := range stagingDirs {
+		info, err := os.Stat(stagingDir)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				slog.Warn("failed to stat orphan staging directory", "path", stagingDir, "error", err)
+			}
+			continue
+		}
+
+		if !info.IsDir() || time.Since(info.ModTime()) < maxAge {
+			continue
+		}
+
+		if err := os.RemoveAll(stagingDir); err != nil {
+			slog.Warn("failed to remove orphan staging directory", "path", stagingDir, "error", err)
+		}
+	}
+	return nil
 }
 
 func prepareContentDownload(finalPath string) (string, func(), error) {
@@ -527,11 +573,14 @@ func publishContent(stagingPath, finalPath string) error {
 func (s *snapshotter) downloadContent(ctx context.Context, filename, digest string, client dragonfly.Client) error {
 	finalPath := s.storage.GetContentPath(ctx, filename)
 	if _, err := os.Stat(finalPath); err == nil {
-		if err := validateContent(finalPath); err != nil {
-			return fmt.Errorf("cached content %q is invalid: %w", finalPath, err)
+		if err := validateContent(finalPath); err == nil {
+			slog.Debug("file already exists, skip download", "path", finalPath)
+			return nil
 		}
-		slog.Debug("file already exists, skip download", "path", finalPath)
-		return nil
+		slog.Warn("cached content is invalid, removing it before re-downloading", "path", finalPath)
+		if err := os.Remove(finalPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove invalid cached content %q: %w", finalPath, err)
+		}
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("failed to stat content %q: %w", finalPath, err)
 	}
@@ -554,6 +603,16 @@ func (s *snapshotter) downloadContent(ctx context.Context, filename, digest stri
 
 	if err := publishContent(stagingPath, finalPath); err != nil {
 		if !errors.Is(err, errContentAlreadyExists) {
+			return fmt.Errorf("failed to publish downloaded content: %w", err)
+		}
+		if err := validateContent(finalPath); err == nil {
+			return nil
+		}
+		slog.Warn("published content is invalid, replacing it with the validated download", "path", finalPath)
+		if err := os.Remove(finalPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove invalid published content %q: %w", finalPath, err)
+		}
+		if err := publishContent(stagingPath, finalPath); err != nil && !errors.Is(err, errContentAlreadyExists) {
 			return fmt.Errorf("failed to publish downloaded content: %w", err)
 		}
 		if err := validateContent(finalPath); err != nil {
