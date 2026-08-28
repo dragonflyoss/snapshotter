@@ -3,7 +3,7 @@ module d7y.io/snapshotter
 go 1.25.5
 
 require (
-	d7y.io/api/v2 v2.3.1
+	d7y.io/api/v2 v2.3.2
 	github.com/google/uuid v1.6.0
 	github.com/jinzhu/copier v0.4.0
 	github.com/joho/godotenv v1.5.1
@@ -14,7 +14,7 @@ require (
 	go.etcd.io/bbolt v1.5.0
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.46.0
-	google.golang.org/grpc v1.83.0
+	google.golang.org/grpc v1.83.1
 	oras.land/oras-go/v2 v2.6.2
 )
 
@@ -26,5 +26,5 @@ require (
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
 )
