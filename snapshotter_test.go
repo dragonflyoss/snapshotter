@@ -527,8 +527,8 @@ func TestPublishContent(t *testing.T) {
 			t.Fatalf("failed to write staged content: %v", err)
 		}
 
-		if err := publishContent(stagingPath, finalPath); !errors.Is(err, errContentAlreadyExists) {
-			t.Fatalf("publishContent() error = %v, want %v", err, errContentAlreadyExists)
+		if err := publishContent(stagingPath, finalPath); !errors.Is(err, ErrContentAlreadyExists) {
+			t.Fatalf("publishContent() error = %v, want %v", err, ErrContentAlreadyExists)
 		}
 		content, err := os.ReadFile(finalPath)
 		if err != nil {

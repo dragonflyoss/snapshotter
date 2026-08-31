@@ -45,7 +45,8 @@ var (
 	// ErrSnapshotAlreadyExists indicates that the snapshot already exists.
 	ErrSnapshotAlreadyExists = errors.New("snapshot already exists")
 
-	errContentAlreadyExists = errors.New("content already exists")
+	// ErrContentAlreadyExists indicates that the content already exists.
+	ErrContentAlreadyExists = errors.New("content already exists")
 )
 
 const (
@@ -229,7 +230,7 @@ func New(config Config, opts ...Option) (Snapshotter, error) {
 	}
 
 	// Sweep staging directories orphaned by a previous crash.
-	if err := cleanupOrphanStagingDirs(filepath.Dir(storage.GetContentPath(context.Background(), "placeholder")), defaultDownloadTimeout); err != nil {
+	if err := cleanupOrphanStagingDirs(storage.ContentDir(), defaultDownloadTimeout); err != nil {
 		slog.Warn("failed to clean up orphan staging directories", "error", err)
 	}
 
@@ -521,7 +522,7 @@ func (s *snapshotter) ensureContent(ctx context.Context, file metadata.File, cli
 func cleanupOrphanStagingDirs(contentDir string, maxAge time.Duration) error {
 	// Staging directories left behind by a crashed process are not tracked
 	// by the metadata store, so sweep them here based on their age.
-	stagingDirs, err := filepath.Glob(filepath.Join(contentDir, ".download-*"))
+	stagingDirs, err := filepath.Glob(filepath.Join(contentDir, storage.StagingDirPattern))
 	if err != nil {
 		return fmt.Errorf("failed to list staging directories: %w", err)
 	}
@@ -547,7 +548,7 @@ func cleanupOrphanStagingDirs(contentDir string, maxAge time.Duration) error {
 }
 
 func prepareContentDownload(finalPath string) (string, func(), error) {
-	stagingDir, err := os.MkdirTemp(filepath.Dir(finalPath), ".download-*")
+	stagingDir, err := os.MkdirTemp(filepath.Dir(finalPath), storage.StagingDirPattern)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to create content download staging directory: %w", err)
 	}
@@ -562,7 +563,7 @@ func prepareContentDownload(finalPath string) (string, func(), error) {
 func publishContent(stagingPath, finalPath string) error {
 	if err := os.Link(stagingPath, finalPath); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("%w: %q", errContentAlreadyExists, finalPath)
+			return fmt.Errorf("%w: %q", ErrContentAlreadyExists, finalPath)
 		}
 		return fmt.Errorf("failed to publish staged content as %q: %w", finalPath, err)
 	}
@@ -602,7 +603,7 @@ func (s *snapshotter) downloadContent(ctx context.Context, filename, digest stri
 	}
 
 	if err := publishContent(stagingPath, finalPath); err != nil {
-		if !errors.Is(err, errContentAlreadyExists) {
+		if !errors.Is(err, ErrContentAlreadyExists) {
 			return fmt.Errorf("failed to publish downloaded content: %w", err)
 		}
 		if err := validateContent(finalPath); err == nil {
@@ -612,7 +613,7 @@ func (s *snapshotter) downloadContent(ctx context.Context, filename, digest stri
 		if err := os.Remove(finalPath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("failed to remove invalid published content %q: %w", finalPath, err)
 		}
-		if err := publishContent(stagingPath, finalPath); err != nil && !errors.Is(err, errContentAlreadyExists) {
+		if err := publishContent(stagingPath, finalPath); err != nil && !errors.Is(err, ErrContentAlreadyExists) {
 			return fmt.Errorf("failed to publish downloaded content: %w", err)
 		}
 		if err := validateContent(finalPath); err != nil {

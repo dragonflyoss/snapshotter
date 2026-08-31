@@ -119,6 +119,19 @@ func TestStorage_GetContentPath(t *testing.T) {
 	}
 }
 
+func TestStorage_ContentDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	s, err := New(tmpDir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	expectedDir := filepath.Join(tmpDir, "storage", "content", ContentHashAlgorithm)
+	if dir := s.ContentDir(); dir != expectedDir {
+		t.Errorf("ContentDir() = %v, want %v", dir, expectedDir)
+	}
+}
+
 func TestStorage_RestoreSnapshotFromContent(t *testing.T) {
 	tmpDir := t.TempDir()
 	s, err := New(tmpDir)
