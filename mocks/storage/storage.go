@@ -42,6 +42,51 @@ func (_m *Storage) EXPECT() *Storage_Expecter {
 	return &Storage_Expecter{mock: &_m.Mock}
 }
 
+// ContentDir provides a mock function with no fields
+func (_m *Storage) ContentDir() string {
+	ret := _m.Called()
+
+	if len(ret) == 0 {
+		panic("no return value specified for ContentDir")
+	}
+
+	var r0 string
+	if rf, ok := ret.Get(0).(func() string); ok {
+		r0 = rf()
+	} else {
+		r0 = ret.Get(0).(string)
+	}
+
+	return r0
+}
+
+// Storage_ContentDir_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ContentDir'
+type Storage_ContentDir_Call struct {
+	*mock.Call
+}
+
+// ContentDir is a helper method to define mock.On call
+func (_e *Storage_Expecter) ContentDir() *Storage_ContentDir_Call {
+	return &Storage_ContentDir_Call{Call: _e.mock.On("ContentDir")}
+}
+
+func (_c *Storage_ContentDir_Call) Run(run func()) *Storage_ContentDir_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *Storage_ContentDir_Call) Return(_a0 string) *Storage_ContentDir_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *Storage_ContentDir_Call) RunAndReturn(run func() string) *Storage_ContentDir_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Export provides a mock function with given fields: ctx, outputDir, file, srcFilename
 func (_m *Storage) Export(ctx context.Context, outputDir string, file metadata.File, srcFilename string) error {
 	ret := _m.Called(ctx, outputDir, file, srcFilename)

@@ -31,17 +31,22 @@ import (
 
 	"github.com/jinzhu/copier"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/singleflight"
 
 	"d7y.io/snapshotter/internal/gc"
 	"d7y.io/snapshotter/internal/metadata"
 	"d7y.io/snapshotter/internal/storage"
 	"d7y.io/snapshotter/pkg/dragonfly"
 	"d7y.io/snapshotter/pkg/oci"
+	"d7y.io/snapshotter/pkg/sparsefile"
 )
 
 var (
 	// ErrSnapshotAlreadyExists indicates that the snapshot already exists.
 	ErrSnapshotAlreadyExists = errors.New("snapshot already exists")
+
+	// ErrContentAlreadyExists indicates that the content already exists.
+	ErrContentAlreadyExists = errors.New("content already exists")
 )
 
 const (
@@ -50,6 +55,10 @@ const (
 
 	// defaultRestoreConcurrency is the default concurrency limit for restore operations.
 	defaultRestoreConcurrency = 5
+
+	// defaultDownloadTimeout bounds a shared content download so a stuck
+	// transfer cannot hold its singleflight key forever.
+	defaultDownloadTimeout = 30 * time.Minute
 )
 
 // Option is a function that configures the snapshotter.
@@ -182,6 +191,11 @@ type snapshotter struct {
 
 	// storage is the storage instance for storage operations.
 	storage storage.Storage
+
+	// downloadTimeout bounds each shared content download flight.
+	downloadTimeout time.Duration
+
+	contentDownloads singleflight.Group
 }
 
 // New creates a new snapshotter instance.
@@ -215,6 +229,11 @@ func New(config Config, opts ...Option) (Snapshotter, error) {
 		return nil, err
 	}
 
+	// Sweep staging directories orphaned by a previous crash.
+	if err := cleanupOrphanStagingDirs(storage.ContentDir(), defaultDownloadTimeout); err != nil {
+		slog.Warn("failed to clean up orphan staging directories", "error", err)
+	}
+
 	gcOpts := []gc.Option{}
 	if interval := config.GC.Interval; interval != nil {
 		gcOpts = append(gcOpts, gc.WithInterval(*interval))
@@ -246,6 +265,7 @@ func New(config Config, opts ...Option) (Snapshotter, error) {
 		restoreConcurrency:  restoreConcurrency,
 		metadata:            metadata,
 		storage:             storage,
+		downloadTimeout:     defaultDownloadTimeout,
 	}, nil
 }
 
@@ -476,6 +496,144 @@ func (s *snapshotter) export(ctx context.Context, outputDir string, files []meta
 	return eg.Wait()
 }
 
+func (s *snapshotter) ensureContent(ctx context.Context, file metadata.File, client dragonfly.Client) error {
+	filename := storage.ParseFilenameFromDigest(file.Digest)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	timeout := s.downloadTimeout
+	if timeout <= 0 {
+		timeout = defaultDownloadTimeout
+	}
+	result := s.contentDownloads.DoChan(filename, func() (any, error) {
+		downloadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+		defer cancel()
+		return nil, s.downloadContent(downloadCtx, filename, file.Digest, client)
+	})
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case result := <-result:
+		return result.Err
+	}
+}
+
+func cleanupOrphanStagingDirs(contentDir string, maxAge time.Duration) error {
+	// Staging directories left behind by a crashed process are not tracked
+	// by the metadata store, so sweep them here based on their age.
+	stagingDirs, err := filepath.Glob(filepath.Join(contentDir, storage.StagingDirPattern))
+	if err != nil {
+		return fmt.Errorf("failed to list staging directories: %w", err)
+	}
+
+	for _, stagingDir := range stagingDirs {
+		info, err := os.Stat(stagingDir)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				slog.Warn("failed to stat orphan staging directory", "path", stagingDir, "error", err)
+			}
+			continue
+		}
+
+		if !info.IsDir() || time.Since(info.ModTime()) < maxAge {
+			continue
+		}
+
+		if err := os.RemoveAll(stagingDir); err != nil {
+			slog.Warn("failed to remove orphan staging directory", "path", stagingDir, "error", err)
+		}
+	}
+	return nil
+}
+
+func prepareContentDownload(finalPath string) (string, func(), error) {
+	stagingDir, err := os.MkdirTemp(filepath.Dir(finalPath), storage.StagingDirPattern)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create content download staging directory: %w", err)
+	}
+	if err := os.Chmod(stagingDir, storage.DirPerm); err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return "", nil, fmt.Errorf("failed to set content download staging directory permissions: %w", err)
+	}
+
+	return filepath.Join(stagingDir, "content"), func() { _ = os.RemoveAll(stagingDir) }, nil
+}
+
+func publishContent(stagingPath, finalPath string) error {
+	if err := os.Link(stagingPath, finalPath); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("%w: %q", ErrContentAlreadyExists, finalPath)
+		}
+		return fmt.Errorf("failed to publish staged content as %q: %w", finalPath, err)
+	}
+
+	return nil
+}
+
+func (s *snapshotter) downloadContent(ctx context.Context, filename, digest string, client dragonfly.Client) error {
+	finalPath := s.storage.GetContentPath(ctx, filename)
+	if _, err := os.Stat(finalPath); err == nil {
+		if err := validateContent(finalPath); err == nil {
+			slog.Debug("file already exists, skip download", "path", finalPath)
+			return nil
+		}
+		slog.Warn("cached content is invalid, removing it before re-downloading", "path", finalPath)
+		if err := os.Remove(finalPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove invalid cached content %q: %w", finalPath, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to stat content %q: %w", finalPath, err)
+	}
+
+	stagingPath, cleanup, err := prepareContentDownload(finalPath)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	if err := client.Download(ctx, &dragonfly.DownloadRequest{
+		Digest:     digest,
+		OutputPath: stagingPath,
+	}); err != nil {
+		return fmt.Errorf("failed to download file: %w", err)
+	}
+	if err := validateContent(stagingPath); err != nil {
+		return fmt.Errorf("downloaded content %q is invalid: %w", stagingPath, err)
+	}
+
+	if err := publishContent(stagingPath, finalPath); err != nil {
+		if !errors.Is(err, ErrContentAlreadyExists) {
+			return fmt.Errorf("failed to publish downloaded content: %w", err)
+		}
+		if err := validateContent(finalPath); err == nil {
+			return nil
+		}
+		slog.Warn("published content is invalid, replacing it with the validated download", "path", finalPath)
+		if err := os.Remove(finalPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove invalid published content %q: %w", finalPath, err)
+		}
+		if err := publishContent(stagingPath, finalPath); err != nil && !errors.Is(err, ErrContentAlreadyExists) {
+			return fmt.Errorf("failed to publish downloaded content: %w", err)
+		}
+		if err := validateContent(finalPath); err != nil {
+			return fmt.Errorf("published content %q is invalid: %w", finalPath, err)
+		}
+	}
+
+	return nil
+}
+
+func validateContent(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	return sparsefile.ValidateHeader(file)
+}
+
 // sync restores the data from remote to local storage.
 func (s *snapshotter) syncFromRemote(ctx context.Context, name, version string, registryClient oci.Client, dragonflyClient dragonfly.Client) (*metadata.MetadataEntry, error) {
 	// Pull the manifest from registry to get the metadata.
@@ -501,21 +659,14 @@ func (s *snapshotter) syncFromRemote(ctx context.Context, name, version string, 
 	eg.SetLimit(s.restoreConcurrency)
 	for _, file := range config.Files {
 		eg.Go(func() error {
-			outputPath := s.storage.GetContentPath(ctx, storage.ParseFilenameFromDigest(file.Digest))
-			if _, err := os.Stat(outputPath); err == nil {
-				slog.Debug("file already exists, skip download", "path", outputPath)
-			} else {
-				if err := dragonflyClient.Download(ctx, &dragonfly.DownloadRequest{
-					Digest:     file.Digest,
-					OutputPath: outputPath,
-				}); err != nil {
-					return fmt.Errorf("failed to download file: %w", err)
-				}
+			filename := storage.ParseFilenameFromDigest(file.Digest)
+			if err := s.ensureContent(ctx, file, dragonflyClient); err != nil {
+				return err
 			}
 
 			// Restore the snapshot from content for read only file.
 			if file.ReadOnly {
-				if err := s.storage.RestoreSnapshotFromContent(ctx, storage.ParseFilenameFromDigest(file.Digest)); err != nil {
+				if err := s.storage.RestoreSnapshotFromContent(ctx, filename); err != nil {
 					return fmt.Errorf("failed to restore snapshot from content: %w", err)
 				}
 			}

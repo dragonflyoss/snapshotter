@@ -42,6 +42,10 @@ const (
 	// TempContentPattern is the pattern for temporary content files.
 	TempContentPattern = ".content-*"
 
+	// StagingDirPattern is the pattern for private staging directories that
+	// hold in-flight content downloads before they are published.
+	StagingDirPattern = ".download-*"
+
 	// TempSnapshotPattern is the pattern for temporary snapshot files.
 	TempSnapshotPattern = ".snapshot-*"
 )
@@ -79,6 +83,9 @@ type Storage interface {
 
 	// GetContentPath returns the path to the content.
 	GetContentPath(ctx context.Context, filename string) string
+
+	// ContentDir returns the directory that stores content files.
+	ContentDir() string
 
 	// StatSnapshot returns the snapshot info.
 	StatSnapshot(ctx context.Context, filename string) (os.FileInfo, error)
@@ -218,6 +225,11 @@ func (s *storage) WriteContent(ctx context.Context, baseDir string, file File) (
 // GetContentPath implements the Storage.GetContentPath.
 func (s *storage) GetContentPath(ctx context.Context, filename string) string {
 	return filepath.Join(s.contentDir, filename)
+}
+
+// ContentDir implements the Storage.ContentDir.
+func (s *storage) ContentDir() string {
+	return s.contentDir
 }
 
 // StatSnapshot implements the Storage.StatSnapshot.

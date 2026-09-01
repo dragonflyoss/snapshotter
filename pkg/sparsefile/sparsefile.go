@@ -20,12 +20,29 @@ package sparsefile
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 
 	"golang.org/x/sys/unix"
 )
+
+// ErrInvalidMagic indicates that content is not SPF1 encoded.
+var ErrInvalidMagic = errors.New("invalid magic")
+
+// ValidateHeader verifies that a stream starts with the SPF1 magic bytes.
+func ValidateHeader(in io.Reader) error {
+	m := make([]byte, len(magic))
+	if _, err := io.ReadFull(in, m); err != nil {
+		return err
+	}
+	if string(m) != magic {
+		return fmt.Errorf("%w: %q", ErrInvalidMagic, m)
+	}
+
+	return nil
+}
 
 // magic is the file format identifier for the sparse packing format.
 const magic = "SPF1"
@@ -157,13 +174,8 @@ func Encode(path string, out io.Writer) error {
 // It recreates the file with the recorded logical size and writes only the stored extents
 // at their original offsets so that holes remain sparse on supported filesystems.
 func Decode(in io.Reader, destPath string) error {
-	// Read and validate magic.
-	m := make([]byte, len(magic))
-	if _, err := io.ReadFull(in, m); err != nil {
+	if err := ValidateHeader(in); err != nil {
 		return err
-	}
-	if string(m) != magic {
-		return fmt.Errorf("invalid magic: %q", m)
 	}
 
 	// Read logical size and extent count.

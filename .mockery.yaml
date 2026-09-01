@@ -12,6 +12,11 @@ packages:
       Storage:
         config:
           dir: mocks/storage
+  d7y.io/snapshotter/pkg/dragonfly:
+    interfaces:
+      Client:
+        config:
+          dir: mocks/dragonfly
   d7y.io/snapshotter/internal/metadata:
     interfaces:
       Metadata:

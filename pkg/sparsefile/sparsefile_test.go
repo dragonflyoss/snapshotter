@@ -20,6 +20,7 @@ package sparsefile
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -136,6 +137,21 @@ func TestDecodeInvalidMagic(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for invalid magic")
 	}
+}
+
+func TestValidateHeader(t *testing.T) {
+	t.Run("rejects incomplete content", func(t *testing.T) {
+		err := ValidateHeader(bytes.NewReader([]byte{0, 0, 0, 0}))
+		if !errors.Is(err, ErrInvalidMagic) {
+			t.Fatalf("ValidateHeader() error = %v, want %v", err, ErrInvalidMagic)
+		}
+	})
+
+	t.Run("accepts spf1 header", func(t *testing.T) {
+		if err := ValidateHeader(bytes.NewReader([]byte("SPF1"))); err != nil {
+			t.Fatalf("ValidateHeader() error = %v", err)
+		}
+	})
 }
 
 func TestEncodeNonExistentFile(t *testing.T) {
