@@ -1,5 +1,5 @@
-d7y.io/api/v2 v2.3.2 h1:CvC5G1QPpYE38Bfj1ePTooHH7XpJbrZIgneo1fSgGzI=
-d7y.io/api/v2 v2.3.2/go.mod h1:wpH5vl1BhTm10cpzJ7dqSsDXq4eyhu8iLjouQJ6ZiBQ=
+d7y.io/api/v2 v2.3.6 h1:Kw2mvdd59LbtmCvUBdGmwX2rc+uIkNMCFLe17EGlDHQ=
+d7y.io/api/v2 v2.3.6/go.mod h1:wpH5vl1BhTm10cpzJ7dqSsDXq4eyhu8iLjouQJ6ZiBQ=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
 github.com/envoyproxy/protoc-gen-validate v1.3.3 h1:MVQghNeW+LZcmXe7SY1V36Z+WFMDjpqGAGacLe2T0ds=
