@@ -13,8 +13,8 @@ require (
 	github.com/zeebo/xxh3 v1.1.0
 	go.etcd.io/bbolt v1.5.0
 	golang.org/x/sync v0.22.0
-	golang.org/x/sys v0.46.0
-	google.golang.org/grpc v1.83.1
+	golang.org/x/sys v0.47.0
+	google.golang.org/grpc v1.83.2
 	oras.land/oras-go/v2 v2.6.2
 )
 
@@ -23,8 +23,8 @@ require (
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/net v0.55.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
