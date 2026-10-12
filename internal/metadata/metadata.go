@@ -28,6 +28,9 @@ func Key(name, version string) string {
 
 // Metadata defines the common operations for metadata.
 type Metadata interface {
+	// Close closes the metadata store.
+	Close() error
+
 	// GetMetadata retrieves the metadata value for the given key.
 	GetMetadata(ctx context.Context, key string) (*MetadataEntry, error)
 

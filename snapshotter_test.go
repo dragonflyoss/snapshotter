@@ -87,6 +87,51 @@ func failingDownload(_ context.Context, req *dragonfly.DownloadRequest) error {
 	return errDownloadFailed
 }
 
+func TestNewResourceLifecycle(t *testing.T) {
+	t.Run("closes metadata when client creation fails", func(t *testing.T) {
+		rootDir := t.TempDir()
+		_, err := New(Config{
+			RootDir: rootDir,
+			Dragonfly: dragonfly.Dragonfly{
+				Endpoint: "\x00",
+			},
+		})
+		if err == nil {
+			t.Fatal("New() error = nil, want invalid Dragonfly endpoint error")
+		}
+
+		metadataStore, err := metadata.New(rootDir)
+		if err != nil {
+			t.Fatalf("metadata.New() after failed New() error = %v", err)
+		}
+		if err := metadataStore.Close(); err != nil {
+			t.Fatalf("metadata.Close() error = %v", err)
+		}
+	})
+
+	t.Run("close is idempotent and releases metadata", func(t *testing.T) {
+		rootDir := t.TempDir()
+		s, err := New(Config{RootDir: rootDir})
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatalf("second Close() error = %v", err)
+		}
+
+		metadataStore, err := metadata.New(rootDir)
+		if err != nil {
+			t.Fatalf("metadata.New() after Close() error = %v", err)
+		}
+		if err := metadataStore.Close(); err != nil {
+			t.Fatalf("metadata.Close() error = %v", err)
+		}
+	})
+}
+
 func TestSyncFromRemote(t *testing.T) {
 	t.Run("keeps incomplete download private", func(t *testing.T) {
 		// Given: one restore is downloading content while another requests the same digest.
@@ -555,6 +600,392 @@ func TestPrepareContentDownload(t *testing.T) {
 		}
 		if info.Mode().Perm() != storage.DirPerm {
 			t.Fatalf("staging directory mode = %o, want %o", info.Mode().Perm(), storage.DirPerm)
+		}
+	})
+}
+
+func TestUploadContent(t *testing.T) {
+	rootDir := t.TempDir()
+	store, err := storage.New(rootDir)
+	if err != nil {
+		t.Fatalf("storage.New() error = %v", err)
+	}
+	metadataStore, err := metadata.New(rootDir)
+	if err != nil {
+		t.Fatalf("metadata.New() error = %v", err)
+	}
+
+	baseDir := t.TempDir()
+	const relativePath = "rootfs.img"
+	sourcePath := filepath.Join(baseDir, relativePath)
+	source := []byte("standalone rootfs content")
+	if err := os.WriteFile(sourcePath, source, 0o644); err != nil {
+		t.Fatalf("failed to create source file: %v", err)
+	}
+
+	client := mocksdragonfly.NewClient(t)
+	client.EXPECT().Upload(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req *dragonfly.UploadRequest) error {
+		if !strings.HasPrefix(req.Digest, "xxh3:") {
+			t.Fatalf("Upload() digest = %q, want xxh3 digest", req.Digest)
+		}
+		if err := validateContent(req.SrcPath); err != nil {
+			t.Fatalf("uploaded content is not sparse encoded: %v", err)
+		}
+		return nil
+	})
+
+	s := &snapshotter{metadata: metadataStore, storage: store}
+	file, err := s.uploadContent(context.Background(), baseDir, File{
+		RelativePath: relativePath,
+		ReadOnly:     true,
+	}, client)
+	if err != nil {
+		t.Fatalf("uploadContent() error = %v", err)
+	}
+	if file.Metadata.Size != int64(len(source)) {
+		t.Fatalf("content size = %d, want %d", file.Metadata.Size, len(source))
+	}
+	if !file.ReadOnly {
+		t.Fatal("content is not marked read-only")
+	}
+
+	filename := storage.ParseFilenameFromDigest(file.Digest)
+	snapshotInfo, err := store.StatSnapshot(context.Background(), filename)
+	if err != nil {
+		t.Fatalf("StatSnapshot() error = %v", err)
+	}
+	sourceInfo, err := os.Stat(sourcePath)
+	if err != nil {
+		t.Fatalf("failed to stat source: %v", err)
+	}
+	if !os.SameFile(sourceInfo, snapshotInfo) {
+		t.Fatal("read-only snapshot does not hardlink the source")
+	}
+	if err := s.trackStandaloneContent(context.Background(), file); err != nil {
+		t.Fatalf("trackStandaloneContent() error = %v", err)
+	}
+	contentMetadata, err := metadataStore.GetContentMetadata(context.Background(), file.Digest)
+	if err != nil {
+		t.Fatalf("GetContentMetadata() error = %v", err)
+	}
+	if len(contentMetadata.References) != 1 || contentMetadata.References[0] != standaloneContentMetadataPrefix+file.Digest {
+		t.Fatalf("content references = %v, want standalone reference", contentMetadata.References)
+	}
+}
+
+func TestPutContentPreservesMetadata(t *testing.T) {
+	rootDir := t.TempDir()
+	store, err := storage.New(rootDir)
+	if err != nil {
+		t.Fatalf("storage.New() error = %v", err)
+	}
+	metadataStore, err := metadata.New(rootDir)
+	if err != nil {
+		t.Fatalf("metadata.New() error = %v", err)
+	}
+
+	baseDir := t.TempDir()
+	const relativePath = "rootfs.img"
+	sourcePath := filepath.Join(baseDir, relativePath)
+	if err := os.WriteFile(sourcePath, []byte("standalone rootfs content"), 0o640); err != nil {
+		t.Fatalf("failed to create source file: %v", err)
+	}
+	wantModTime := time.Unix(1_700_000_000, 0)
+	if err := os.Chtimes(sourcePath, wantModTime, wantModTime); err != nil {
+		t.Fatalf("failed to set source mtime: %v", err)
+	}
+
+	provider := dragonfly.ContentProvider{Provider: "oss", Bucket: "bucket"}
+	client := mocksdragonfly.NewProviderClient(t)
+	client.EXPECT().WithContent(provider).Return(client)
+	client.EXPECT().Upload(mock.Anything, mock.Anything).Return(nil)
+	s := &snapshotter{
+		config:          &Config{Content: provider},
+		metadata:        metadataStore,
+		storage:         store,
+		dragonflyClient: client,
+	}
+
+	descriptor, err := s.PutContent(context.Background(), baseDir, File{
+		RelativePath: relativePath,
+		ReadOnly:     true,
+	})
+	if err != nil {
+		t.Fatalf("PutContent() error = %v", err)
+	}
+	if descriptor.Mode != 0o640 {
+		t.Fatalf("descriptor mode = %o, want 640", descriptor.Mode)
+	}
+	if !descriptor.ModTime.Equal(wantModTime) {
+		t.Fatalf("descriptor mtime = %v, want %v", descriptor.ModTime, wantModTime)
+	}
+}
+
+func TestRestoreContentWithoutOutputPreheatsCache(t *testing.T) {
+	rootDir := t.TempDir()
+	store, err := storage.New(rootDir)
+	if err != nil {
+		t.Fatalf("storage.New() error = %v", err)
+	}
+	metadataStore, err := metadata.New(rootDir)
+	if err != nil {
+		t.Fatalf("metadata.New() error = %v", err)
+	}
+
+	sourcePath := filepath.Join(t.TempDir(), "rootfs.img")
+	source := []byte("preheated standalone rootfs")
+	if err := os.WriteFile(sourcePath, source, 0o644); err != nil {
+		t.Fatalf("failed to create source file: %v", err)
+	}
+	release := make(chan struct{})
+	close(release)
+	client := mocksdragonfly.NewClient(t)
+	client.EXPECT().Download(mock.Anything, mock.Anything).RunAndReturn(
+		blockingDownload(sourcePath, make(chan struct{}, 1), release),
+	)
+
+	s := &snapshotter{metadata: metadataStore, storage: store}
+	descriptor := ContentDescriptor{
+		Digest:   "xxh3:0123456789abcdef",
+		Size:     int64(len(source)),
+		Encoding: ContentEncodingSparseV1,
+		ReadOnly: true,
+	}
+	if err := s.restoreContent(context.Background(), descriptor, "", client); err != nil {
+		t.Fatalf("restoreContent() error = %v", err)
+	}
+
+	filename := storage.ParseFilenameFromDigest(descriptor.Digest)
+	if _, err := store.StatSnapshot(context.Background(), filename); err != nil {
+		t.Fatalf("preheated snapshot cache missing: %v", err)
+	}
+	contentMetadata, err := metadataStore.GetContentMetadata(context.Background(), descriptor.Digest)
+	if err != nil {
+		t.Fatalf("GetContentMetadata() error = %v", err)
+	}
+	if len(contentMetadata.References) != 1 || contentMetadata.References[0] != standaloneContentMetadataPrefix+descriptor.Digest {
+		t.Fatalf("content references = %v, want standalone reference", contentMetadata.References)
+	}
+}
+
+func TestStandaloneContentReferenceLifecycle(t *testing.T) {
+	t.Run("touches existing reference before download completes", func(t *testing.T) {
+		rootDir := t.TempDir()
+		store, err := storage.New(rootDir)
+		if err != nil {
+			t.Fatalf("storage.New() error = %v", err)
+		}
+		metadataStore, err := metadata.New(rootDir)
+		if err != nil {
+			t.Fatalf("metadata.New() error = %v", err)
+		}
+
+		file := metadata.File{
+			Digest:   "xxh3:0123456789abcdef",
+			ReadOnly: false,
+		}
+		key := standaloneContentMetadataPrefix + file.Digest
+		oldAccessTime := time.Unix(1, 0)
+		entry := metadata.MetadataEntry{
+			CreatedAt:      oldAccessTime,
+			LastAccessedAt: oldAccessTime,
+			Config:         metadata.Config{Files: []metadata.File{file}},
+		}
+		if err := metadataStore.PutMetadata(context.Background(), key, entry); err != nil {
+			t.Fatalf("PutMetadata() error = %v", err)
+		}
+		if err := metadataStore.PutContentMetadata(context.Background(), key, entry); err != nil {
+			t.Fatalf("PutContentMetadata() error = %v", err)
+		}
+
+		sourcePath := filepath.Join(t.TempDir(), "rootfs.img")
+		if err := os.WriteFile(sourcePath, []byte("standalone rootfs content"), 0o644); err != nil {
+			t.Fatalf("failed to create source file: %v", err)
+		}
+		started := make(chan struct{})
+		release := make(chan struct{})
+		client := mocksdragonfly.NewClient(t)
+		client.EXPECT().Download(mock.Anything, mock.Anything).RunAndReturn(
+			blockingDownload(sourcePath, started, release),
+		)
+		s := &snapshotter{metadata: metadataStore, storage: store}
+		result := make(chan error, 1)
+		go func() {
+			result <- s.prepareContent(context.Background(), file, client)
+		}()
+
+		<-started
+		updated, err := metadataStore.GetMetadata(context.Background(), key)
+		if err != nil {
+			close(release)
+			t.Fatalf("GetMetadata() error = %v", err)
+		}
+		if !updated.LastAccessedAt.After(oldAccessTime) {
+			close(release)
+			t.Fatalf("LastAccessedAt = %v, want after %v", updated.LastAccessedAt, oldAccessTime)
+		}
+
+		close(release)
+		if err := <-result; err != nil {
+			t.Fatalf("prepareContent() error = %v", err)
+		}
+	})
+
+	t.Run("does not create reference when preparation fails", func(t *testing.T) {
+		rootDir := t.TempDir()
+		store, err := storage.New(rootDir)
+		if err != nil {
+			t.Fatalf("storage.New() error = %v", err)
+		}
+		metadataStore, err := metadata.New(rootDir)
+		if err != nil {
+			t.Fatalf("metadata.New() error = %v", err)
+		}
+
+		file := metadata.File{Digest: "xxh3:fedcba9876543210"}
+		client := mocksdragonfly.NewClient(t)
+		client.EXPECT().Download(mock.Anything, mock.Anything).RunAndReturn(failingDownload)
+		s := &snapshotter{metadata: metadataStore, storage: store}
+
+		err = s.restoreContent(context.Background(), ContentDescriptor{
+			Digest:   file.Digest,
+			Encoding: ContentEncodingSparseV1,
+		}, "", client)
+		if !errors.Is(err, errDownloadFailed) {
+			t.Fatalf("restoreContent() error = %v, want %v", err, errDownloadFailed)
+		}
+		if _, err := metadataStore.GetMetadata(context.Background(), standaloneContentMetadataPrefix+file.Digest); !errors.Is(err, metadata.ErrKeyNotFound) {
+			t.Fatalf("standalone reference exists after failed preparation: %v", err)
+		}
+	})
+}
+
+func TestRestoreContent(t *testing.T) {
+	t.Run("downloads and exports read-only content", func(t *testing.T) {
+		rootDir := t.TempDir()
+		store, err := storage.New(rootDir)
+		if err != nil {
+			t.Fatalf("storage.New() error = %v", err)
+		}
+		metadataStore, err := metadata.New(rootDir)
+		if err != nil {
+			t.Fatalf("metadata.New() error = %v", err)
+		}
+
+		sourcePath := filepath.Join(t.TempDir(), "rootfs.img")
+		source := []byte("restored standalone rootfs")
+		if err := os.WriteFile(sourcePath, source, 0o644); err != nil {
+			t.Fatalf("failed to create source file: %v", err)
+		}
+		release := make(chan struct{})
+		close(release)
+		client := mocksdragonfly.NewClient(t)
+		client.EXPECT().Download(mock.Anything, mock.Anything).RunAndReturn(
+			blockingDownload(sourcePath, make(chan struct{}, 1), release),
+		)
+
+		s := &snapshotter{metadata: metadataStore, storage: store}
+		descriptor := ContentDescriptor{
+			Digest:   "xxh3:0123456789abcdef",
+			Size:     int64(len(source)),
+			Encoding: ContentEncodingSparseV1,
+			ReadOnly: true,
+			Mode:     0o640,
+			ModTime:  time.Unix(1_700_000_000, 0),
+		}
+		outputPath := filepath.Join(t.TempDir(), "checkpoint", "rootfs.img")
+		if err := s.restoreContent(context.Background(), descriptor, outputPath, client); err != nil {
+			t.Fatalf("restoreContent() error = %v", err)
+		}
+
+		got, err := os.ReadFile(outputPath)
+		if err != nil {
+			t.Fatalf("failed to read restored content: %v", err)
+		}
+		if string(got) != string(source) {
+			t.Fatalf("restored content = %q, want %q", got, source)
+		}
+		filename := storage.ParseFilenameFromDigest(descriptor.Digest)
+		snapshotInfo, err := store.StatSnapshot(context.Background(), filename)
+		if err != nil {
+			t.Fatalf("StatSnapshot() error = %v", err)
+		}
+		outputInfo, err := os.Stat(outputPath)
+		if err != nil {
+			t.Fatalf("failed to stat restored content: %v", err)
+		}
+		if !os.SameFile(snapshotInfo, outputInfo) {
+			t.Fatal("restored read-only content does not use the snapshot hardlink")
+		}
+		if outputInfo.Mode().Perm() != os.FileMode(descriptor.Mode) {
+			t.Fatalf("restored mode = %o, want %o", outputInfo.Mode().Perm(), descriptor.Mode)
+		}
+		if !outputInfo.ModTime().Equal(descriptor.ModTime) {
+			t.Fatalf("restored mtime = %v, want %v", outputInfo.ModTime(), descriptor.ModTime)
+		}
+	})
+
+	t.Run("removes output on size mismatch", func(t *testing.T) {
+		rootDir := t.TempDir()
+		store, err := storage.New(rootDir)
+		if err != nil {
+			t.Fatalf("storage.New() error = %v", err)
+		}
+		metadataStore, err := metadata.New(rootDir)
+		if err != nil {
+			t.Fatalf("metadata.New() error = %v", err)
+		}
+
+		sourcePath := filepath.Join(t.TempDir(), "rootfs.img")
+		source := []byte("restored standalone rootfs")
+		if err := os.WriteFile(sourcePath, source, 0o644); err != nil {
+			t.Fatalf("failed to create source file: %v", err)
+		}
+		release := make(chan struct{})
+		close(release)
+		client := mocksdragonfly.NewClient(t)
+		client.EXPECT().Download(mock.Anything, mock.Anything).RunAndReturn(
+			blockingDownload(sourcePath, make(chan struct{}, 1), release),
+		)
+
+		s := &snapshotter{metadata: metadataStore, storage: store}
+		descriptor := ContentDescriptor{
+			Digest:   "xxh3:0123456789abcdef",
+			Size:     int64(len(source) + 1),
+			Encoding: ContentEncodingSparseV1,
+			ReadOnly: true,
+		}
+		outputPath := filepath.Join(t.TempDir(), "checkpoint", "rootfs.img")
+		err = s.restoreContent(context.Background(), descriptor, outputPath, client)
+		if err == nil || !strings.Contains(err.Error(), "does not match descriptor size") {
+			t.Fatalf("restoreContent() error = %v, want size mismatch", err)
+		}
+		if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
+			t.Fatalf("invalid restored output still exists: %v", statErr)
+		}
+	})
+
+	t.Run("rejects unsupported encoding", func(t *testing.T) {
+		client := mocksdragonfly.NewClient(t)
+		s := &snapshotter{}
+		err := s.restoreContent(context.Background(), ContentDescriptor{
+			Digest:   "xxh3:0123456789abcdef",
+			Encoding: "unknown",
+		}, filepath.Join(t.TempDir(), "rootfs.img"), client)
+		if err == nil || !strings.Contains(err.Error(), "unsupported content encoding") {
+			t.Fatalf("restoreContent() error = %v, want unsupported encoding", err)
+		}
+	})
+
+	t.Run("rejects unsafe digest", func(t *testing.T) {
+		client := mocksdragonfly.NewClient(t)
+		s := &snapshotter{}
+		err := s.restoreContent(context.Background(), ContentDescriptor{
+			Digest:   "xxh3:../../rootfs",
+			Encoding: ContentEncodingSparseV1,
+		}, filepath.Join(t.TempDir(), "rootfs.img"), client)
+		if err == nil || !strings.Contains(err.Error(), "invalid content digest") {
+			t.Fatalf("restoreContent() error = %v, want invalid digest", err)
 		}
 	})
 }

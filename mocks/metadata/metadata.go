@@ -38,6 +38,51 @@ func (_m *Metadata) EXPECT() *Metadata_Expecter {
 	return &Metadata_Expecter{mock: &_m.Mock}
 }
 
+// Close provides a mock function with no fields
+func (_m *Metadata) Close() error {
+	ret := _m.Called()
+
+	if len(ret) == 0 {
+		panic("no return value specified for Close")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func() error); ok {
+		r0 = rf()
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// Metadata_Close_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Close'
+type Metadata_Close_Call struct {
+	*mock.Call
+}
+
+// Close is a helper method to define mock.On call
+func (_e *Metadata_Expecter) Close() *Metadata_Close_Call {
+	return &Metadata_Close_Call{Call: _e.mock.On("Close")}
+}
+
+func (_c *Metadata_Close_Call) Run(run func()) *Metadata_Close_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *Metadata_Close_Call) Return(_a0 error) *Metadata_Close_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *Metadata_Close_Call) RunAndReturn(run func() error) *Metadata_Close_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // GetContent provides a mock function with given fields: ctx, key
 func (_m *Metadata) GetContent(ctx context.Context, key string) (*metadata.File, error) {
 	ret := _m.Called(ctx, key)

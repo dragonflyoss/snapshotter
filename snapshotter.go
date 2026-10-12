@@ -26,6 +26,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,6 +52,9 @@ var (
 )
 
 const (
+	// ContentEncodingSparseV1 identifies the sparse content encoding used by the snapshotter.
+	ContentEncodingSparseV1 = "sparse-v1"
+
 	// defaultSnapshotConcurrency is the default concurrency limit for snapshot operations.
 	defaultSnapshotConcurrency = 5
 
@@ -59,6 +64,8 @@ const (
 	// defaultDownloadTimeout bounds a shared content download so a stuck
 	// transfer cannot hold its singleflight key forever.
 	defaultDownloadTimeout = 30 * time.Minute
+
+	standaloneContentMetadataPrefix = "__content__:"
 )
 
 // Option is a function that configures the snapshotter.
@@ -66,6 +73,15 @@ type Option func(*Config)
 
 // Snapshotter is an interface that defines the methods for snapshotting and restoring files.
 type Snapshotter interface {
+	// Close releases resources owned by the snapshotter.
+	Close() error
+
+	// PutContent stores and uploads a file without publishing snapshot metadata to a registry.
+	PutContent(ctx context.Context, baseDir string, file File, opts ...Option) (*ContentDescriptor, error)
+
+	// GetContent downloads and restores content to outputPath without reading snapshot metadata from a registry.
+	GetContent(ctx context.Context, descriptor ContentDescriptor, outputPath string, opts ...Option) error
+
 	// Snapshot creates a snapshot of the specified files.
 	Snapshot(ctx context.Context, req *SnapshotRequest, opts ...Option) error
 
@@ -140,6 +156,27 @@ type File struct {
 	ReadOnly bool
 }
 
+// ContentDescriptor identifies content stored through Dragonfly.
+type ContentDescriptor struct {
+	// Digest is the content digest of the sparse-encoded file.
+	Digest string `json:"digest"`
+
+	// Size is the logical size of the original file in bytes.
+	Size int64 `json:"size"`
+
+	// Encoding identifies how the object is encoded in remote storage.
+	Encoding string `json:"encoding"`
+
+	// ReadOnly enables the decoded snapshot cache and hardlink-based export.
+	ReadOnly bool `json:"readOnly"`
+
+	// Mode is the source file's permission bits.
+	Mode uint32 `json:"mode"`
+
+	// ModTime is the source file's last modification time.
+	ModTime time.Time `json:"mtime"`
+}
+
 // GC defines the garbage collection configuration for the snapshotter.
 type GC struct {
 	// Interval is the interval at which garbage collection is performed.
@@ -192,6 +229,14 @@ type snapshotter struct {
 	// storage is the storage instance for storage operations.
 	storage storage.Storage
 
+	// dragonflyClient is shared by all operations so its gRPC connection is reused.
+	dragonflyClient dragonfly.ProviderClient
+
+	gcCancel  context.CancelFunc
+	gcDone    chan struct{}
+	closeOnce sync.Once
+	closeErr  error
+
 	// downloadTimeout bounds each shared content download flight.
 	downloadTimeout time.Duration
 
@@ -223,10 +268,21 @@ func New(config Config, opts ...Option) (Snapshotter, error) {
 	if err != nil {
 		return nil, err
 	}
+	closeMetadata := func(cause error) error {
+		if closeErr := metadata.Close(); closeErr != nil {
+			return errors.Join(cause, fmt.Errorf("failed to close metadata: %w", closeErr))
+		}
+		return cause
+	}
 
 	storage, err := storage.New(config.RootDir)
 	if err != nil {
-		return nil, err
+		return nil, closeMetadata(err)
+	}
+
+	dragonflyClient, err := dragonfly.New(config.Dragonfly, config.Content, config.RootDir)
+	if err != nil {
+		return nil, closeMetadata(err)
 	}
 
 	// Sweep staging directories orphaned by a previous crash.
@@ -255,9 +311,14 @@ func New(config Config, opts ...Option) (Snapshotter, error) {
 		gcOpts = append(gcOpts, gc.WithMinRetentionPeriod(*minRetentionPeriod))
 	}
 
-	// Run the gc service in background.
+	// Run the gc service in background and retain its lifecycle controls.
 	gc := gc.New(config.RootDir, metadata, storage, gcOpts...)
-	go gc.Run(context.Background())
+	gcCtx, gcCancel := context.WithCancel(context.Background())
+	gcDone := make(chan struct{})
+	go func() {
+		defer close(gcDone)
+		gc.Run(gcCtx)
+	}()
 
 	return &snapshotter{
 		config:              &config,
@@ -265,8 +326,37 @@ func New(config Config, opts ...Option) (Snapshotter, error) {
 		restoreConcurrency:  restoreConcurrency,
 		metadata:            metadata,
 		storage:             storage,
+		dragonflyClient:     dragonflyClient,
+		gcCancel:            gcCancel,
+		gcDone:              gcDone,
 		downloadTimeout:     defaultDownloadTimeout,
 	}, nil
+}
+
+// Close releases resources owned by the snapshotter.
+func (s *snapshotter) Close() error {
+	s.closeOnce.Do(func() {
+		if s.gcCancel != nil {
+			s.gcCancel()
+		}
+		if s.gcDone != nil {
+			<-s.gcDone
+		}
+
+		var closeErrors []error
+		if s.dragonflyClient != nil {
+			if err := s.dragonflyClient.Close(); err != nil {
+				closeErrors = append(closeErrors, fmt.Errorf("failed to close Dragonfly client: %w", err))
+			}
+		}
+		if s.metadata != nil {
+			if err := s.metadata.Close(); err != nil {
+				closeErrors = append(closeErrors, fmt.Errorf("failed to close metadata: %w", err))
+			}
+		}
+		s.closeErr = errors.Join(closeErrors...)
+	})
+	return s.closeErr
 }
 
 // validate validates the configuration of the snapshotter.
@@ -280,13 +370,9 @@ func validate(config Config) error {
 
 // initialize initializes the snapshotter.
 func (s *snapshotter) initialize(opts ...Option) (oci.Client, dragonfly.Client, error) {
-	config := &Config{}
-	if err := copier.Copy(&config, &s.config); err != nil {
+	config, err := s.configWithOptions(opts...)
+	if err != nil {
 		return nil, nil, fmt.Errorf("failed to copy config: %w", err)
-	}
-
-	for _, opt := range opts {
-		opt(config)
 	}
 
 	registryClient, err := oci.New(config.RootDir, config.Metadata.Registry)
@@ -294,12 +380,62 @@ func (s *snapshotter) initialize(opts ...Option) (oci.Client, dragonfly.Client, 
 		return nil, nil, err
 	}
 
-	dragonflyClient, err := dragonfly.New(config.Dragonfly, config.Content, config.RootDir)
+	return registryClient, s.dragonflyClient.WithContent(config.Content), nil
+}
+
+func (s *snapshotter) initializeDragonfly(opts ...Option) (dragonfly.Client, error) {
+	config, err := s.configWithOptions(opts...)
 	if err != nil {
-		return nil, nil, err
+		return nil, fmt.Errorf("failed to copy config: %w", err)
 	}
 
-	return registryClient, dragonflyClient, nil
+	return s.dragonflyClient.WithContent(config.Content), nil
+}
+
+func (s *snapshotter) configWithOptions(opts ...Option) (*Config, error) {
+	config := &Config{}
+	if err := copier.Copy(config, s.config); err != nil {
+		return nil, err
+	}
+	for _, opt := range opts {
+		opt(config)
+	}
+	return config, nil
+}
+
+// PutContent stores and uploads a file without publishing an OCI manifest.
+func (s *snapshotter) PutContent(ctx context.Context, baseDir string, file File, opts ...Option) (*ContentDescriptor, error) {
+	dragonflyClient, err := s.initializeDragonfly(opts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize: %w", err)
+	}
+
+	metadataFile, err := s.uploadContent(ctx, baseDir, file, dragonflyClient)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.trackStandaloneContent(ctx, metadataFile); err != nil {
+		return nil, err
+	}
+
+	return &ContentDescriptor{
+		Digest:   metadataFile.Digest,
+		Size:     metadataFile.Metadata.Size,
+		Encoding: ContentEncodingSparseV1,
+		ReadOnly: metadataFile.ReadOnly,
+		Mode:     metadataFile.Metadata.Mode,
+		ModTime:  metadataFile.Metadata.ModTime,
+	}, nil
+}
+
+// GetContent downloads and restores content without reading an OCI manifest.
+func (s *snapshotter) GetContent(ctx context.Context, descriptor ContentDescriptor, outputPath string, opts ...Option) error {
+	dragonflyClient, err := s.initializeDragonfly(opts...)
+	if err != nil {
+		return fmt.Errorf("failed to initialize: %w", err)
+	}
+
+	return s.restoreContent(ctx, descriptor, outputPath, dragonflyClient)
 }
 
 // Snapshot creates a snapshot of the specified files.
@@ -325,66 +461,9 @@ func (s *snapshotter) Snapshot(ctx context.Context, req *SnapshotRequest, opts .
 	eg.SetLimit(s.snapshotConcurrency)
 	for _, file := range req.Files {
 		eg.Go(func() error {
-			info, err := os.Stat(filepath.Join(req.BaseDir, file.RelativePath))
+			metadataFile, err := s.uploadContent(ctx, req.BaseDir, file, dragonflyClient)
 			if err != nil {
-				return fmt.Errorf("failed to stat file: %w", err)
-			}
-
-			// Retrieves the file metadata.
-			fileMetadata, err := metadata.GetFileMetadata(info)
-			if err != nil {
-				return fmt.Errorf("failed to get file metadata: %w", err)
-			}
-
-			storageFile := storage.File{
-				RelativePath: file.RelativePath,
-				ReadOnly:     file.ReadOnly,
-			}
-			// Ensure the file exists in the storage.
-			content, err := s.storage.StatContent(ctx, req.BaseDir, storageFile)
-			if err != nil {
-				// The content is not exist, then try to write it to the storage.
-				content, err = s.storage.WriteContent(ctx, req.BaseDir, storageFile)
-				if err != nil {
-					return fmt.Errorf("failed to write content: %w", err)
-				}
-
-				// Hardlink the file to the snapshot for read only file.
-				if file.ReadOnly {
-					if err := s.storage.HardlinkSnapshot(ctx, req.BaseDir, storageFile, content.Name()); err != nil {
-						return fmt.Errorf("failed to hardlink snapshot: %w", err)
-					}
-				}
-			} else {
-				// The content already exists, then check whether the snapshot exists for read only file.
-				if file.ReadOnly {
-					if _, err := s.storage.StatSnapshot(ctx, content.Name()); err != nil {
-						// The snapshot not exists, then try to hardlink the file to the snapshot.
-						if err := s.storage.HardlinkSnapshot(ctx, req.BaseDir, storageFile, content.Name()); err != nil {
-							return fmt.Errorf("failed to hardlink snapshot: %w", err)
-						}
-					}
-				}
-			}
-
-			// Upload the file to the dragonfly.
-			digest := storage.ContentDigest(content.Name())
-			if err := dragonflyClient.Upload(ctx, &dragonfly.UploadRequest{
-				Digest:  digest,
-				SrcPath: s.storage.GetContentPath(ctx, storage.ParseFilenameFromDigest(digest))}); err != nil {
-				return fmt.Errorf("failed to upload file: %w", err)
-			}
-
-			metadataFile := metadata.File{
-				ReadOnly:     file.ReadOnly,
-				RelativePath: file.RelativePath,
-				Metadata:     fileMetadata,
-				Digest:       storage.ContentDigest(content.Name()),
-			}
-
-			// Store the content metadata.
-			if err := s.metadata.PutContent(ctx, metadataFile.Digest, metadataFile); err != nil {
-				return fmt.Errorf("failed to store content metadata: %w", err)
+				return err
 			}
 
 			mu.Lock()
@@ -439,6 +518,154 @@ func (s *snapshotter) Snapshot(ctx context.Context, req *SnapshotRequest, opts .
 	return nil
 }
 
+func (s *snapshotter) uploadContent(ctx context.Context, baseDir string, file File, client dragonfly.Client) (metadata.File, error) {
+	info, err := os.Stat(filepath.Join(baseDir, file.RelativePath))
+	if err != nil {
+		return metadata.File{}, fmt.Errorf("failed to stat file: %w", err)
+	}
+	fileMetadata, err := metadata.GetFileMetadata(info)
+	if err != nil {
+		return metadata.File{}, fmt.Errorf("failed to get file metadata: %w", err)
+	}
+
+	storageFile := storage.File{RelativePath: file.RelativePath, ReadOnly: file.ReadOnly}
+	content, err := s.storage.StatContent(ctx, baseDir, storageFile)
+	if err != nil {
+		content, err = s.storage.WriteContent(ctx, baseDir, storageFile)
+		if err != nil {
+			return metadata.File{}, fmt.Errorf("failed to write content: %w", err)
+		}
+	}
+
+	if file.ReadOnly {
+		if _, err := s.storage.StatSnapshot(ctx, content.Name()); err != nil {
+			if err := s.storage.HardlinkSnapshot(ctx, baseDir, storageFile, content.Name()); err != nil {
+				return metadata.File{}, fmt.Errorf("failed to hardlink snapshot: %w", err)
+			}
+		}
+	}
+
+	digest := storage.ContentDigest(content.Name())
+	if err := s.touchStandaloneContent(ctx, digest); err != nil {
+		return metadata.File{}, err
+	}
+	if err := client.Upload(ctx, &dragonfly.UploadRequest{
+		Digest:  digest,
+		SrcPath: s.storage.GetContentPath(ctx, content.Name()),
+	}); err != nil {
+		return metadata.File{}, fmt.Errorf("failed to upload file: %w", err)
+	}
+
+	metadataFile := metadata.File{
+		Digest:       digest,
+		ReadOnly:     file.ReadOnly,
+		RelativePath: file.RelativePath,
+		Metadata:     fileMetadata,
+	}
+	if err := s.metadata.PutContent(ctx, metadataFile.Digest, metadataFile); err != nil {
+		return metadata.File{}, fmt.Errorf("failed to store content metadata: %w", err)
+	}
+	return metadataFile, nil
+}
+
+func (s *snapshotter) restoreContent(ctx context.Context, descriptor ContentDescriptor, outputPath string, client dragonfly.Client) error {
+	if err := validateContentDescriptor(descriptor); err != nil {
+		return err
+	}
+	relativePath := filepath.Base(outputPath)
+	if outputPath == "" {
+		relativePath = storage.ParseFilenameFromDigest(descriptor.Digest)
+	}
+
+	file := metadata.File{
+		Digest:       descriptor.Digest,
+		ReadOnly:     descriptor.ReadOnly,
+		RelativePath: relativePath,
+		Metadata: metadata.FileMetadata{
+			Size:    descriptor.Size,
+			Mode:    descriptor.Mode,
+			ModTime: descriptor.ModTime,
+		},
+	}
+	if err := s.prepareContent(ctx, file, client); err != nil {
+		return err
+	}
+	if err := s.trackStandaloneContent(ctx, file); err != nil {
+		return err
+	}
+	if outputPath == "" {
+		return nil
+	}
+	if err := s.exportContent(ctx, filepath.Dir(outputPath), file); err != nil {
+		return err
+	}
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat restored content: %w", err)
+	}
+	if info.Size() != descriptor.Size {
+		if err := os.Remove(outputPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("restored content size %d does not match descriptor size %d; failed to remove invalid output %q: %w", info.Size(), descriptor.Size, outputPath, err)
+		}
+		return fmt.Errorf("restored content size %d does not match descriptor size %d", info.Size(), descriptor.Size)
+	}
+	return nil
+}
+
+func (s *snapshotter) touchStandaloneContent(ctx context.Context, digest string) error {
+	key := standaloneContentMetadataPrefix + digest
+	if _, err := s.metadata.GetMetadata(ctx, key); err == nil {
+		if err := s.metadata.TouchMetadata(ctx, key); err != nil {
+			return fmt.Errorf("failed to touch standalone content metadata: %w", err)
+		}
+		return nil
+	} else if !errors.Is(err, metadata.ErrKeyNotFound) {
+		return fmt.Errorf("failed to get standalone content metadata: %w", err)
+	}
+	return nil
+}
+
+func (s *snapshotter) trackStandaloneContent(ctx context.Context, file metadata.File) error {
+	key := standaloneContentMetadataPrefix + file.Digest
+	entry := metadata.MetadataEntry{
+		CreatedAt:      time.Now(),
+		LastAccessedAt: time.Now(),
+		Config:         metadata.Config{Files: []metadata.File{file}},
+	}
+	if _, err := s.metadata.GetMetadata(ctx, key); err == nil {
+		if err := s.metadata.TouchMetadata(ctx, key); err != nil {
+			return fmt.Errorf("failed to touch standalone content metadata: %w", err)
+		}
+	} else if errors.Is(err, metadata.ErrKeyNotFound) {
+		if err := s.metadata.PutMetadata(ctx, key, entry); err != nil {
+			return fmt.Errorf("failed to store standalone content metadata: %w", err)
+		}
+	} else {
+		return fmt.Errorf("failed to get standalone content metadata: %w", err)
+	}
+	if err := s.metadata.PutContentMetadata(ctx, key, entry); err != nil {
+		return fmt.Errorf("failed to reference standalone content: %w", err)
+	}
+	return nil
+}
+
+func validateContentDescriptor(descriptor ContentDescriptor) error {
+	algorithm, encoded, ok := strings.Cut(descriptor.Digest, ":")
+	if !ok || algorithm != storage.ContentHashAlgorithm || encoded == "" || len(encoded) > 16 {
+		return fmt.Errorf("invalid content digest %q", descriptor.Digest)
+	}
+	if _, err := strconv.ParseUint(encoded, 16, 64); err != nil {
+		return fmt.Errorf("invalid content digest %q: %w", descriptor.Digest, err)
+	}
+	if descriptor.Size < 0 {
+		return fmt.Errorf("invalid content size %d", descriptor.Size)
+	}
+	if descriptor.Encoding != ContentEncodingSparseV1 {
+		return fmt.Errorf("unsupported content encoding %q", descriptor.Encoding)
+	}
+	return nil
+}
+
 // Restore restores the specified files from the snapshot.
 func (s *snapshotter) Restore(ctx context.Context, req *RestoreRequest, opts ...Option) error {
 	registryClient, dragonflyClient, err := s.initialize(opts...)
@@ -478,22 +705,47 @@ func (s *snapshotter) export(ctx context.Context, outputDir string, files []meta
 	eg.SetLimit(s.restoreConcurrency)
 	for _, file := range files {
 		eg.Go(func() error {
-			if _, err := s.metadata.GetContent(ctx, file.Digest); err != nil {
-				return fmt.Errorf("failed to get content: %w", err)
-			}
-
-			if err := s.storage.Export(ctx,
-				outputDir,
-				file,
-				storage.ParseFilenameFromDigest(file.Digest)); err != nil {
-				return fmt.Errorf("failed to export file: %w", err)
-			}
-
-			return nil
+			return s.exportContent(ctx, outputDir, file)
 		})
 	}
 
 	return eg.Wait()
+}
+
+func (s *snapshotter) prepareContent(ctx context.Context, file metadata.File, client dragonfly.Client) error {
+	if err := s.touchStandaloneContent(ctx, file.Digest); err != nil {
+		return err
+	}
+	if err := s.ensureContent(ctx, file, client); err != nil {
+		return err
+	}
+
+	if file.ReadOnly {
+		filename := storage.ParseFilenameFromDigest(file.Digest)
+		if _, err := s.storage.StatSnapshot(ctx, filename); err != nil {
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("failed to stat snapshot content: %w", err)
+			}
+			if err := s.storage.RestoreSnapshotFromContent(ctx, filename); err != nil {
+				return fmt.Errorf("failed to restore snapshot from content: %w", err)
+			}
+		}
+	}
+
+	if err := s.metadata.PutContent(ctx, file.Digest, file); err != nil {
+		return fmt.Errorf("failed to store content metadata: %w", err)
+	}
+	return nil
+}
+
+func (s *snapshotter) exportContent(ctx context.Context, outputDir string, file metadata.File) error {
+	if _, err := s.metadata.GetContent(ctx, file.Digest); err != nil {
+		return fmt.Errorf("failed to get content: %w", err)
+	}
+	if err := s.storage.Export(ctx, outputDir, file, storage.ParseFilenameFromDigest(file.Digest)); err != nil {
+		return fmt.Errorf("failed to export file: %w", err)
+	}
+	return nil
 }
 
 func (s *snapshotter) ensureContent(ctx context.Context, file metadata.File, client dragonfly.Client) error {
@@ -659,24 +911,7 @@ func (s *snapshotter) syncFromRemote(ctx context.Context, name, version string, 
 	eg.SetLimit(s.restoreConcurrency)
 	for _, file := range config.Files {
 		eg.Go(func() error {
-			filename := storage.ParseFilenameFromDigest(file.Digest)
-			if err := s.ensureContent(ctx, file, dragonflyClient); err != nil {
-				return err
-			}
-
-			// Restore the snapshot from content for read only file.
-			if file.ReadOnly {
-				if err := s.storage.RestoreSnapshotFromContent(ctx, filename); err != nil {
-					return fmt.Errorf("failed to restore snapshot from content: %w", err)
-				}
-			}
-
-			// Store the content metadata.
-			if err := s.metadata.PutContent(ctx, file.Digest, file); err != nil {
-				return fmt.Errorf("failed to store content metadata: %w", err)
-			}
-
-			return nil
+			return s.prepareContent(ctx, file, dragonflyClient)
 		})
 	}
 

@@ -118,8 +118,29 @@ type Client interface {
 	Upload(ctx context.Context, req *UploadRequest) error
 }
 
+// ProviderClient is a Client that can create provider-specific views while
+// sharing its underlying connection.
+type ProviderClient interface {
+	Client
+
+	// Close closes the shared gRPC connection.
+	Close() error
+
+	// WithContent returns a lightweight client view that shares the underlying
+	// gRPC connection while using the supplied content provider.
+	WithContent(provider ContentProvider) Client
+}
+
+// WithContent returns a shallow copy that reuses the concurrency-safe gRPC
+// connection and immutable path configuration.
+func (c *client) WithContent(provider ContentProvider) Client {
+	clone := *c
+	clone.provider = provider
+	return &clone
+}
+
 // New creates a new client for Dragonfly.
-func New(dragonfly Dragonfly, provider ContentProvider, snapshotterRootDir string) (Client, error) {
+func New(dragonfly Dragonfly, provider ContentProvider, snapshotterRootDir string) (ProviderClient, error) {
 	conn, err := grpc.NewClient(dragonfly.Endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, err

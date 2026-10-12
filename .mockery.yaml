@@ -17,6 +17,9 @@ packages:
       Client:
         config:
           dir: mocks/dragonfly
+      ProviderClient:
+        config:
+          dir: mocks/dragonfly
   d7y.io/snapshotter/internal/metadata:
     interfaces:
       Metadata:
