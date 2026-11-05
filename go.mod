@@ -1,6 +1,6 @@
 module d7y.io/snapshotter
 
-go 1.25.5
+go 1.26.0
 
 require (
 	d7y.io/api/v2 v2.3.8
@@ -12,9 +12,9 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/zeebo/xxh3 v1.1.0
 	go.etcd.io/bbolt v1.5.0
-	golang.org/x/sync v0.22.0
-	golang.org/x/sys v0.47.0
-	google.golang.org/grpc v1.83.2
+	golang.org/x/sync v0.23.0
+	golang.org/x/sys v0.48.0
+	google.golang.org/grpc v1.85.0
 	oras.land/oras-go/v2 v2.6.2
 )
 
@@ -23,8 +23,8 @@ require (
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
